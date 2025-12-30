@@ -24,6 +24,12 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 Webhook：`POST /gitlab/webhook`
 
+### 本地测试（无需真实 GitLab/LLM）
+
+如果你暂时没有 GitLab 实例或 OpenAI-compatible LLM 网关，也可以用本项目内置的 mock server 在本机跑通闭环。
+
+详细步骤见：`tmp/local-testing.md`
+
 ### 环境变量
 
 - **GITLAB_BASE_URL**: 例如 `https://gitlab.example.com`
