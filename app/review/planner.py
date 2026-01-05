@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from app.llm.client import ChatMessage
 from app.llm.client import OpenAICompatLLMClient
-from app.review.models import MergeRequestContext
+from app.review.models import ReviewContext
 from app.review.models import RiskPlan
 
 
@@ -26,11 +26,11 @@ def _planner_system_prompt() -> str:
     )
 
 
-def _planner_user_prompt(context: MergeRequestContext) -> str:
+def _planner_user_prompt(context: ReviewContext) -> str:
     """planner 的 user prompt：只提供文件清单（不提供 diff，避免 planner 过度推理）。"""
     files = "\n".join([f"- {c.path} ({c.language})" for c in context.changes])
     return (
-        "基于这次 GitLab MR 的变更文件列表，生成风险规划 JSON：\n"
+        "基于这次 PR/MR 的变更文件列表，生成风险规划 JSON：\n"
         '必须符合 schema: {"highRiskFiles":[...],"reviewFocus":[...],"reviewDepth":"shallow|normal|deep"}\n'
         "规则：\n"
         "- highRiskFiles 必须是本次变更文件的子集（用 path 字符串）\n"
@@ -40,7 +40,7 @@ def _planner_user_prompt(context: MergeRequestContext) -> str:
     )
 
 
-async def plan_risk(llm_client: OpenAICompatLLMClient, context: MergeRequestContext) -> RiskPlan:
+async def plan_risk(llm_client: OpenAICompatLLMClient, context: ReviewContext) -> RiskPlan:
     """
     执行 risk planning，并做工程侧兜底过滤：
     - highRiskFiles 必须属于本次变更文件（避免模型输出不存在路径）

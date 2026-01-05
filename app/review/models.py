@@ -8,7 +8,7 @@ Review 领域模型（Pydantic）。
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, Field
 
@@ -24,8 +24,36 @@ class FileChange(BaseModel):
     is_renamed_file: bool
 
 
+class GitLabReviewSource(BaseModel):
+    """GitLab 侧 review 源信息（写回/幂等使用）。"""
+
+    kind: Literal["gitlab"]
+    project_id: int
+    mr_iid: int
+
+
+class GitHubReviewSource(BaseModel):
+    """GitHub 侧 review 源信息（写回/幂等使用）。"""
+
+    kind: Literal["github"]
+    owner: str
+    repo: str
+    pull_number: int
+
+
+ReviewSource = Annotated[Union[GitLabReviewSource, GitHubReviewSource], Field(discriminator="kind")]
+
+
+class ReviewContext(BaseModel):
+    """一次代码评审的上下文（平台无关，供 planner/reviewer 使用）。"""
+
+    source: ReviewSource
+    head_sha: str
+    changes: list[FileChange] = Field(default_factory=list)
+
+
 class MergeRequestContext(BaseModel):
-    """一次 MR 的上下文（供 planner/reviewer 使用）。"""
+    """兼容：历史命名（仅 GitLab），后续可逐步迁移到 `ReviewContext`。"""
 
     project_id: int
     mr_iid: int

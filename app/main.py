@@ -19,9 +19,11 @@ import httpx
 from fastapi import FastAPI
 
 from app.config import load_config_from_env
+from app.github.webhook import build_github_webhook_router
 from app.gitlab.webhook import build_gitlab_webhook_router
 from app.llm.client import OpenAICompatLLMClient
 from app.review.orchestrator import build_review_orchestrator
+from app.review.orchestrator import build_github_webhook_handler
 from app.review.orchestrator import build_webhook_handler
 
 
@@ -36,24 +38,28 @@ def build_app() -> FastAPI:
 
     # 3) LLM client：OpenAI-compatible（你后续只要填 base_url/api_key/model）
     llm_client = OpenAICompatLLMClient(
-        api_key=config.llm_api_key,
-        base_url=str(config.llm_base_url).rstrip("/"),
+        api_key=config.llm.api_key,
+        base_url=str(config.llm.base_url).rstrip("/"),
         http_client=http_client,
-        model=config.llm_model,
+        model=config.llm.model,
     )
 
     # 4) 组装“你写流程，Agent 只负责思考”的 orchestrator
     orchestrator = build_review_orchestrator(llm_client=llm_client)
-    webhook_handler = build_webhook_handler(config=config, http_client=http_client, orchestrator=orchestrator)
 
     app = FastAPI(title="AI Code Review", version="0.1.0")
 
-    @app.get("/health")
+    @app.post("/health")
     async def health() -> dict[str, str]:
         """健康检查：用于 k8s / LB 探活。"""
         return {"status": "ok"}
 
-    app.include_router(build_gitlab_webhook_router(config=config, handler=webhook_handler))
+    if config.gitlab is not None:
+        gitlab_handler = build_webhook_handler(config=config.gitlab, http_client=http_client, orchestrator=orchestrator)
+        app.include_router(build_gitlab_webhook_router(config=config.gitlab, handler=gitlab_handler))
+    if config.github is not None:
+        github_handler = build_github_webhook_handler(config=config.github, http_client=http_client, orchestrator=orchestrator)
+        app.include_router(build_github_webhook_router(config=config.github, handler=github_handler))
     return app
 
 

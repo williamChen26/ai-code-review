@@ -12,14 +12,8 @@ from app.review.models import ReviewComment
 from app.review.models import RiskPlan
 
 
-def synthesize_gitlab_note_body(head_sha: str, plan: RiskPlan, comments: list[ReviewComment]) -> str:
-    """
-    将 planner + reviewer 的结果拼成一段 GitLab MR note 文本。
-
-    - head_sha：用于标注 review 对应的 commit（便于版本化/幂等）
-    - plan：risk planning 输出
-    - comments：文件级 review 建议列表
-    """
+def synthesize_review_markdown_body(head_sha: str, plan: RiskPlan, comments: list[ReviewComment]) -> str:
+    """将 planner + reviewer 的结果拼成一段平台无关的 Markdown 评论正文。"""
     focus = ", ".join(plan.reviewFocus)
     lines: list[str] = []
     lines.append(f"AI Code Review (commit: `{head_sha}`)")
@@ -37,5 +31,10 @@ def synthesize_gitlab_note_body(head_sha: str, plan: RiskPlan, comments: list[Re
         lines.append(f"- **[{c.severity}]** `{c.path}`: {c.message}")
 
     return "\n".join(lines)
+
+
+def synthesize_gitlab_note_body(head_sha: str, plan: RiskPlan, comments: list[ReviewComment]) -> str:
+    """兼容：历史命名。"""
+    return synthesize_review_markdown_body(head_sha=head_sha, plan=plan, comments=comments)
 
 

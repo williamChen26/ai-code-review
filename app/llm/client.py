@@ -91,5 +91,3 @@ class OpenAICompatLLMClient:
         except json.JSONDecodeError as exc:
             raise ValueError(f"LLM did not return valid JSON. Raw: {text}") from exc
         return schema.model_validate(parsed)
-
-

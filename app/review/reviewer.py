@@ -39,7 +39,7 @@ def _file_review_system_prompt() -> str:
     """reviewer 的 system prompt：强制 JSON-only 输出。"""
     return (
         "你是资深代码审查工程师。"
-        "你必须输出严格 JSON（不要 markdown、不要解释），用于生成可直接贴到 GitLab 评论的建议。"
+        "你必须输出严格 JSON（不要 markdown、不要解释），用于生成可直接贴到代码评审评论区的建议。"
     )
 
 

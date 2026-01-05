@@ -14,15 +14,54 @@ from collections.abc import Mapping
 from pydantic import BaseModel, HttpUrl
 
 
-class AppConfig(BaseModel):
-    """应用运行所需的最小配置集合（全部必填）。"""
+class GitLabConfig(BaseModel):
+    """GitLab 集成配置（启用 GitLab webhook 时必填）。"""
 
-    gitlab_base_url: HttpUrl
-    gitlab_token: str
-    gitlab_webhook_secret: str
-    llm_base_url: HttpUrl
-    llm_api_key: str
-    llm_model: str
+    base_url: HttpUrl
+    token: str
+    webhook_secret: str
+
+
+class GitHubConfig(BaseModel):
+    """GitHub 集成配置（启用 GitHub webhook 时必填）。"""
+
+    api_base_url: HttpUrl
+    token: str
+    webhook_secret: str
+
+
+class LLMConfig(BaseModel):
+    """LLM 配置（任何评审都需要）。"""
+
+    base_url: HttpUrl
+    api_key: str
+    model: str
+
+
+class AppConfig(BaseModel):
+    """应用配置：LLM 必填；GitLab/GitHub 至少启用一个。"""
+
+    llm: LLMConfig
+    gitlab: GitLabConfig | None
+    github: GitHubConfig | None
+
+
+def _load_optional_group(environ: Mapping[str, str], keys: tuple[str, ...], group_name: str) -> dict[str, str] | None:
+    """
+    从 environ 加载一组“可选但必须成组完整”的配置。
+
+    - 如果 keys 全部缺失/为空：返回 None（表示该集成未启用）
+    - 如果 keys 部分存在：抛 ValueError（避免“看似启用但其实缺配置”）
+    - 如果 keys 全部存在且非空：返回 dict
+    """
+    values: dict[str, str] = {k: environ.get(k, "") for k in keys}
+    present = {k for k, v in values.items() if v}
+    if not present:
+        return None
+    missing = [k for k in keys if not values.get(k)]
+    if missing:
+        raise ValueError(f"Missing required env vars for {group_name}: {', '.join(missing)}")
+    return values
 
 
 def load_config_from_env(environ: Mapping[str, str]) -> AppConfig:
@@ -34,27 +73,44 @@ def load_config_from_env(environ: Mapping[str, str]) -> AppConfig:
     - **失败**：缺失/为空则抛 `ValueError`
     """
 
-    required_keys: tuple[str, ...] = (
-        "GITLAB_BASE_URL",
-        "GITLAB_TOKEN",
-        "GITLAB_WEBHOOK_SECRET",
-        "LLM_BASE_URL",
-        "LLM_API_KEY",
-        "LLM_MODEL",
+    llm_required: tuple[str, ...] = ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL")
+    llm_missing: list[str] = [key for key in llm_required if key not in environ or not environ[key]]
+    if llm_missing:
+        raise ValueError(f"Missing required env vars: {', '.join(llm_missing)}")
+
+    gitlab_raw = _load_optional_group(
+        environ=environ,
+        keys=("GITLAB_BASE_URL", "GITLAB_TOKEN", "GITLAB_WEBHOOK_SECRET"),
+        group_name="gitlab",
     )
+    github_raw = _load_optional_group(
+        environ=environ,
+        keys=("GITHUB_API_BASE_URL", "GITHUB_TOKEN", "GITHUB_WEBHOOK_SECRET"),
+        group_name="github",
+    )
+    if gitlab_raw is None and github_raw is None:
+        raise ValueError("At least one SCM integration must be configured: GitLab or GitHub")
 
-    missing: list[str] = [key for key in required_keys if key not in environ or not environ[key]]
-    if missing:
-        raise ValueError(f"Missing required env vars: {', '.join(missing)}")
-
-    # 交给 Pydantic 做类型校验（例如 URL 合法性）
     return AppConfig(
-        gitlab_base_url=environ["GITLAB_BASE_URL"],
-        gitlab_token=environ["GITLAB_TOKEN"],
-        gitlab_webhook_secret=environ["GITLAB_WEBHOOK_SECRET"],
-        llm_base_url=environ["LLM_BASE_URL"],
-        llm_api_key=environ["LLM_API_KEY"],
-        llm_model=environ["LLM_MODEL"],
+        llm=LLMConfig(base_url=environ["LLM_BASE_URL"], api_key=environ["LLM_API_KEY"], model=environ["LLM_MODEL"]),
+        gitlab=(
+            None
+            if gitlab_raw is None
+            else GitLabConfig(
+                base_url=gitlab_raw["GITLAB_BASE_URL"],
+                token=gitlab_raw["GITLAB_TOKEN"],
+                webhook_secret=gitlab_raw["GITLAB_WEBHOOK_SECRET"],
+            )
+        ),
+        github=(
+            None
+            if github_raw is None
+            else GitHubConfig(
+                api_base_url=github_raw["GITHUB_API_BASE_URL"],
+                token=github_raw["GITHUB_TOKEN"],
+                webhook_secret=github_raw["GITHUB_WEBHOOK_SECRET"],
+            )
+        ),
     )
 
 

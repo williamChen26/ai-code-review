@@ -68,11 +68,6 @@ def build_merge_request_context(
             )
         )
 
-    return MergeRequestContext(
-        project_id=project_id,
-        mr_iid=mr_iid,
-        head_sha=head_sha,
-        changes=file_changes,
-    )
+    return MergeRequestContext(project_id=project_id, mr_iid=mr_iid, head_sha=head_sha, changes=file_changes)
 
 

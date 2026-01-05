@@ -17,13 +17,13 @@ from fastapi import Header
 from fastapi import HTTPException
 from fastapi import Request
 
-from app.config import AppConfig
+from app.config import GitLabConfig
 from app.gitlab.schemas import GitLabMergeRequestWebhookEvent
 
 WebhookHandler = Callable[[GitLabMergeRequestWebhookEvent], Awaitable[None]]
 
 
-def build_gitlab_webhook_router(config: AppConfig, handler: WebhookHandler) -> APIRouter:
+def build_gitlab_webhook_router(config: GitLabConfig, handler: WebhookHandler) -> APIRouter:
     """创建 GitLab webhook 路由。"""
     router = APIRouter()
 
@@ -33,7 +33,7 @@ def build_gitlab_webhook_router(config: AppConfig, handler: WebhookHandler) -> A
         x_gitlab_token: str = Header(alias="X-Gitlab-Token"),
     ) -> dict[str, str]:
         # 1) Webhook secret 校验（GitLab UI 里配置）
-        if x_gitlab_token != config.gitlab_webhook_secret:
+        if x_gitlab_token != config.webhook_secret:
             raise HTTPException(status_code=401, detail="Invalid webhook token")
 
         # 2) 解析 payload（不做 try/except：出错就直接 4xx，便于发现问题）

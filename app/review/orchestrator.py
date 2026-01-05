@@ -16,14 +16,16 @@ from dataclasses import dataclass
 
 import httpx
 
-from app.config import AppConfig
+from app.config import GitHubConfig
+from app.config import GitLabConfig
+from app.gitlab.adapter import build_review_context_from_gitlab_changes
 from app.gitlab.client import GitLabClient
 from app.gitlab.schemas import GitLabMergeRequestWebhookEvent
 from app.llm.client import OpenAICompatLLMClient
-from app.review.context import build_merge_request_context
+from app.review.models import ReviewContext
 from app.review.planner import plan_risk
 from app.review.reviewer import review_high_risk_files
-from app.review.synthesis import synthesize_gitlab_note_body
+from app.review.synthesis import synthesize_review_markdown_body
 
 
 @dataclass(frozen=True)
@@ -40,10 +42,7 @@ def build_review_orchestrator(llm_client: OpenAICompatLLMClient) -> ReviewOrches
 
 async def run_review(
     orchestrator: ReviewOrchestrator,
-    gitlab_client: GitLabClient,
-    project_id: int,
-    mr_iid: int,
-    head_sha: str,
+    context: ReviewContext,
 ) -> str:
     """
     跑一次完整 review，返回最终要写回 GitLab 的评论正文。
@@ -54,25 +53,17 @@ async def run_review(
     - Step 3: Focused Review（文件级；当前实现为逐文件 JSON 输出）
     - Step 4: Synthesize（确定性拼接/或后续可换成 LLM 无 loop）
     """
-    changes = await gitlab_client.get_merge_request_changes(project_id=project_id, mr_iid=mr_iid)
-    context = build_merge_request_context(
-        project_id=project_id,
-        mr_iid=mr_iid,
-        head_sha=head_sha,
-        changes=changes,
-    )
-
     plan = await plan_risk(llm_client=orchestrator.llm_client, context=context)
     comments = await review_high_risk_files(
         llm_client=orchestrator.llm_client,
         changes=context.changes,
         plan=plan,
     )
-    return synthesize_gitlab_note_body(head_sha=head_sha, plan=plan, comments=comments)
+    return synthesize_review_markdown_body(head_sha=context.head_sha, plan=plan, comments=comments)
 
 
 def build_webhook_handler(
-    config: AppConfig,
+    config: GitLabConfig,
     http_client: httpx.AsyncClient,
     orchestrator: ReviewOrchestrator,
 ) -> Callable[[GitLabMergeRequestWebhookEvent], Awaitable[None]]:
@@ -82,8 +73,8 @@ def build_webhook_handler(
     - 返回一个 `async def handle(event)` 给 webhook 路由调用
     """
     gitlab_client = GitLabClient(
-        base_url=str(config.gitlab_base_url).rstrip("/"),
-        private_token=config.gitlab_token,
+        base_url=str(config.base_url).rstrip("/"),
+        private_token=config.token,
         http_client=http_client,
     )
 
@@ -96,14 +87,58 @@ def build_webhook_handler(
         if not isinstance(head_sha_obj, str) or not head_sha_obj:
             raise ValueError("Webhook payload missing object_attributes.last_commit.id")
 
-        note_body = await run_review(
-            orchestrator=orchestrator,
-            gitlab_client=gitlab_client,
+        changes = await gitlab_client.get_merge_request_changes(project_id=project_id, mr_iid=mr_iid)
+        context = build_review_context_from_gitlab_changes(
             project_id=project_id,
             mr_iid=mr_iid,
             head_sha=head_sha_obj,
+            changes=changes,
         )
+        note_body = await run_review(orchestrator=orchestrator, context=context)
         await gitlab_client.post_merge_request_note(project_id=project_id, mr_iid=mr_iid, body=note_body)
+
+    return handle
+
+
+def build_github_webhook_handler(
+    config: GitHubConfig,
+    http_client: httpx.AsyncClient,
+    orchestrator: ReviewOrchestrator,
+) -> Callable[["GitHubPullRequestWebhookEvent"], Awaitable[None]]:
+    """
+    装配 GitHub webhook handler：
+    - 拉取 PR files/patch
+    - 跑 review pipeline
+    - 写回 GitHub PR review（event=COMMENT）
+    """
+    from app.github.adapter import build_review_context_from_github_pull_request_files
+    from app.github.client import GitHubClient
+    from app.github.schemas import GitHubPullRequestWebhookEvent
+
+    github_client = GitHubClient(api_base_url=str(config.api_base_url).rstrip("/"), token=config.token, http_client=http_client)
+
+    async def handle(event: GitHubPullRequestWebhookEvent) -> None:
+        owner = event.repository.owner.login
+        repo = event.repository.name
+        pull_number = event.pull_request.number
+        head_sha = event.pull_request.head.sha
+
+        files = await github_client.list_pull_request_files(owner=owner, repo=repo, pull_number=pull_number)
+        context = build_review_context_from_github_pull_request_files(
+            owner=owner,
+            repo=repo,
+            pull_number=pull_number,
+            head_sha=head_sha,
+            files=files,
+        )
+        body = await run_review(orchestrator=orchestrator, context=context)
+        await github_client.create_pull_request_review(
+            owner=owner,
+            repo=repo,
+            pull_number=pull_number,
+            commit_id=context.head_sha,
+            body=body,
+        )
 
     return handle
 
