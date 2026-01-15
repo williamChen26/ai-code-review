@@ -49,10 +49,10 @@ def build_app() -> FastAPI:
 
     app = FastAPI(title="AI Code Review", version="0.1.0")
 
-    @app.post("/health")
+    @app.get("/health")
     async def health() -> dict[str, str]:
         """健康检查：用于 k8s / LB 探活。"""
-        return {"status": "ok"}
+        return {"status": "ok 2"}
 
     if config.gitlab is not None:
         gitlab_handler = build_webhook_handler(config=config.gitlab, http_client=http_client, orchestrator=orchestrator)
