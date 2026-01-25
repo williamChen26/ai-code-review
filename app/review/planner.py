@@ -9,13 +9,15 @@ Risk Planner（LLM 单次输出，不 loop）。
 - planner 的职责是“定方向”，不是“边查边想”
 - loop 容易偏航、浪费预算；真正需要工具/推理的环节放到文件级 reviewer
 """
-
 from __future__ import annotations
 
 from app.llm.client import ChatMessage
 from app.llm.client import OpenAICompatLLMClient
 from app.review.models import ReviewContext
 from app.review.models import RiskPlan
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def _planner_system_prompt() -> str:
@@ -50,6 +52,7 @@ async def plan_risk(llm_client: OpenAICompatLLMClient, context: ReviewContext) -
         ChatMessage(role="user", content=_planner_user_prompt(context=context)),
     ]
     result = await llm_client.complete_json(messages=messages, schema=RiskPlan)
+    logger.info(f"Risk planning result: {result}")
     if not isinstance(result, RiskPlan):
         raise TypeError("LLM risk plan did not validate to RiskPlan")
 
