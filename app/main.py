@@ -45,7 +45,12 @@ def build_app() -> FastAPI:
     )
 
     # 4) 组装“你写流程，Agent 只负责思考”的 orchestrator
-    orchestrator = build_review_orchestrator(llm_client=llm_client)
+    orchestrator = build_review_orchestrator(
+        llm_client=llm_client,
+        index_storage=config.index_storage,
+        embedding=config.embedding,
+        repo_sync=config.repo_sync,
+    )
 
     app = FastAPI(title="AI Code Review", version="0.1.0")
 

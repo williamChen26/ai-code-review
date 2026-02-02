@@ -127,3 +127,25 @@ class OpenAICompatLLMClient:
 
         logger.info(f"Successfully validated JSON to {schema.__name__}")
         return validated
+
+    async def embed_texts(self, model: str, texts: Sequence[str]) -> list[list[float]]:
+        if not texts:
+            raise ValueError("texts must not be empty")
+        try:
+            logger.info(f"LLM embedding request: model={model}, inputs={len(texts)}")
+            response = await self._client.embeddings.create(
+                model=model,
+                input=list(texts),
+            )
+        except OpenAIError as exc:
+            logger.error(f"LLM embedding error: {exc}")
+            raise
+        except httpx.HTTPError as exc:
+            logger.error(f"LLM embedding HTTP error: {exc}")
+            raise
+        embeddings: list[list[float]] = []
+        for item in response.data:
+            embeddings.append(list(item.embedding))
+        if len(embeddings) != len(texts):
+            raise RuntimeError("Embedding response length mismatch")
+        return embeddings

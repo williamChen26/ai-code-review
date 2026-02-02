@@ -44,6 +44,8 @@ class GitLabMergeRequestObjectAttributes(BaseModel):
     iid: int
     action: Literal["open", "update", "reopen", "merge", "close", "approved", "unapproved"]
     last_commit: dict[str, object]
+    target_branch: str
+    source_branch: str
 
 
 class GitLabMergeRequestWebhookEvent(BaseModel):

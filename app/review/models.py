@@ -49,6 +49,7 @@ class ReviewContext(BaseModel):
 
     source: ReviewSource
     head_sha: str
+    repo_id: str
     changes: list[FileChange] = Field(default_factory=list)
 
 

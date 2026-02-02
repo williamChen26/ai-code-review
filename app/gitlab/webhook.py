@@ -43,7 +43,7 @@ def build_gitlab_webhook_router(config: GitLabConfig, handler: WebhookHandler) -
             return {"status": "ignored"}
 
         # 3) 只处理我们关心的 MR 动作
-        if event.object_attributes.action not in ("open", "update", "reopen"):
+        if event.object_attributes.action not in ("open", "update", "reopen", "merge"):
             return {"status": "ignored"}
 
         # 4) 交给业务 handler（由 orchestrator 装配）

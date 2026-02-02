@@ -9,6 +9,7 @@ GitLab -> Review domain adapter。
 from __future__ import annotations
 
 from app.gitlab.schemas import GitLabMergeRequestChanges
+from app.indexing.indexer import build_repo_id
 from app.review.context import infer_language_from_path
 from app.review.models import FileChange
 from app.review.models import GitLabReviewSource
@@ -37,6 +38,7 @@ def build_review_context_from_gitlab_changes(
     return ReviewContext(
         source=GitLabReviewSource(kind="gitlab", project_id=project_id, mr_iid=mr_iid),
         head_sha=head_sha,
+        repo_id=build_repo_id(provider="gitlab", repo_key=str(project_id)),
         changes=file_changes,
     )
 

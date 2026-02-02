@@ -43,10 +43,11 @@ def _file_review_system_prompt() -> str:
     )
 
 
-def _file_review_user_prompt(file_change: FileChange, plan: RiskPlan) -> str:
-    """reviewer 的 user prompt：给当前文件 diff + planner 的关注点。"""
+def _file_review_user_prompt(file_change: FileChange, plan: RiskPlan, context_package: str) -> str:
+    """reviewer 的 user prompt：给当前文件 diff + planner 的关注点 + 上下文包。"""
     focus = ", ".join(plan.reviewFocus)
     diff = _truncate_text(text=file_change.diff, max_chars=12000)
+    context = context_package if context_package else "无"
     return (
         "请只基于 diff 做代码审查，输出 JSON：\n"
         '{"comments":[{"path":"...","message":"...","severity":"info|warning|error"}]}\n'
@@ -54,6 +55,7 @@ def _file_review_user_prompt(file_change: FileChange, plan: RiskPlan) -> str:
         "- path 必须等于当前文件 path\n"
         "- message 要具体、可执行，必要时指出风险与修复建议\n"
         f"- 重点关注：{focus}\n\n"
+        f"上下文：\n{context}\n\n"
         f"path: {file_change.path}\n"
         f"language: {file_change.language}\n"
         f"diff:\n{diff}\n"
@@ -64,6 +66,7 @@ async def review_high_risk_files(
     llm_client: OpenAICompatLLMClient,
     changes: list[FileChange],
     plan: RiskPlan,
+    context_by_path: dict[str, str],
 ) -> list[ReviewComment]:
     """
     只 review planner 选出的 highRiskFiles。
@@ -77,10 +80,16 @@ async def review_high_risk_files(
 
     comments: list[ReviewComment] = []
     for file_change in selected:
+        context_package = context_by_path.get(file_change.path, "")
         # 逐文件调用，便于后续做并发/预算控制/失败重试
         messages = [
             ChatMessage(role="system", content=_file_review_system_prompt()),
-            ChatMessage(role="user", content=_file_review_user_prompt(file_change=file_change, plan=plan)),
+            ChatMessage(
+                role="user",
+                content=_file_review_user_prompt(
+                    file_change=file_change, plan=plan, context_package=context_package
+                ),
+            ),
         ]
         result = await llm_client.complete_json(messages=messages, schema=FileReviewResult)
         if not isinstance(result, FileReviewResult):

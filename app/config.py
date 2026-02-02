@@ -38,10 +38,33 @@ class LLMConfig(BaseModel):
     model: str
 
 
+class EmbeddingConfig(BaseModel):
+    """Embedding 配置（用于向量库与上下文检索）。"""
+
+    model: str
+    dimension: int
+
+
+class IndexStorageConfig(BaseModel):
+    """索引/向量库配置（Postgres + pgvector）。"""
+
+    dsn: str
+
+
+class RepoSyncConfig(BaseModel):
+    """仓库同步配置（git clone/pull）。"""
+
+    base_dir: str
+    git_bin: str
+
+
 class AppConfig(BaseModel):
     """应用配置：LLM 必填；GitLab/GitHub 至少启用一个。"""
 
     llm: LLMConfig
+    embedding: EmbeddingConfig
+    index_storage: IndexStorageConfig
+    repo_sync: RepoSyncConfig
     gitlab: GitLabConfig | None
     github: GitHubConfig | None
 
@@ -64,6 +87,14 @@ def _load_optional_group(environ: Mapping[str, str], keys: tuple[str, ...], grou
     return values
 
 
+def _load_required_group(environ: Mapping[str, str], keys: tuple[str, ...], group_name: str) -> dict[str, str]:
+    values: dict[str, str] = {k: environ.get(k, "") for k in keys}
+    missing = [k for k, v in values.items() if not v]
+    if missing:
+        raise ValueError(f"Missing required env vars for {group_name}: {', '.join(missing)}")
+    return values
+
+
 def load_config_from_env(environ: Mapping[str, str]) -> AppConfig:
     """
     从环境变量加载并校验配置。
@@ -77,6 +108,18 @@ def load_config_from_env(environ: Mapping[str, str]) -> AppConfig:
     llm_missing: list[str] = [key for key in llm_required if key not in environ or not environ[key]]
     if llm_missing:
         raise ValueError(f"Missing required env vars: {', '.join(llm_missing)}")
+
+    indexing_raw = _load_required_group(
+        environ=environ,
+        keys=(
+            "INDEX_PG_DSN",
+            "INDEX_EMBED_MODEL",
+            "INDEX_EMBED_DIM",
+            "INDEX_REPO_BASE_DIR",
+            "INDEX_GIT_BIN",
+        ),
+        group_name="indexing",
+    )
 
     gitlab_raw = _load_optional_group(
         environ=environ,
@@ -93,6 +136,15 @@ def load_config_from_env(environ: Mapping[str, str]) -> AppConfig:
 
     return AppConfig(
         llm=LLMConfig(base_url=environ["LLM_BASE_URL"], api_key=environ["LLM_API_KEY"], model=environ["LLM_MODEL"]),
+        embedding=EmbeddingConfig(
+            model=indexing_raw["INDEX_EMBED_MODEL"],
+            dimension=int(indexing_raw["INDEX_EMBED_DIM"]),
+        ),
+        index_storage=IndexStorageConfig(dsn=indexing_raw["INDEX_PG_DSN"]),
+        repo_sync=RepoSyncConfig(
+            base_dir=indexing_raw["INDEX_REPO_BASE_DIR"],
+            git_bin=indexing_raw["INDEX_GIT_BIN"],
+        ),
         gitlab=(
             None
             if gitlab_raw is None

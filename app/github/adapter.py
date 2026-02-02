@@ -8,6 +8,7 @@ GitHub -> Review domain adapter。
 from __future__ import annotations
 
 from app.github.schemas import GitHubPullRequestFile
+from app.indexing.indexer import build_repo_id
 from app.review.context import infer_language_from_path
 from app.review.models import FileChange
 from app.review.models import GitHubReviewSource
@@ -38,6 +39,7 @@ def build_review_context_from_github_pull_request_files(
     return ReviewContext(
         source=GitHubReviewSource(kind="github", owner=owner, repo=repo, pull_number=pull_number),
         head_sha=head_sha,
+        repo_id=build_repo_id(provider="github", repo_key=f"{owner}/{repo}"),
         changes=file_changes,
     )
 

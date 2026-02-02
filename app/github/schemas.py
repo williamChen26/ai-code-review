@@ -19,15 +19,24 @@ class GitHubOwner(BaseModel):
 class GitHubRepository(BaseModel):
     name: str
     owner: GitHubOwner
+    full_name: str
+    clone_url: str
 
 
 class GitHubPullRequestHead(BaseModel):
     sha: str
+    ref: str
+
+
+class GitHubPullRequestBase(BaseModel):
+    ref: str
 
 
 class GitHubPullRequest(BaseModel):
     number: int
     head: GitHubPullRequestHead
+    base: GitHubPullRequestBase
+    merged: bool
 
 
 class GitHubPullRequestWebhookEvent(BaseModel):

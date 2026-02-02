@@ -55,7 +55,7 @@ def build_github_webhook_router(config: GitHubConfig, handler: GitHubWebhookHand
             raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
 
         event = GitHubPullRequestWebhookEvent.model_validate(payload)
-        if event.action not in ("opened", "reopened", "synchronize"):
+        if event.action not in ("opened", "reopened", "synchronize", "closed"):
             return {"status": "ignored"}
 
         await handler(event)
