@@ -4,7 +4,7 @@ import hashlib
 from collections.abc import Iterable
 
 from tree_sitter import Node
-from tree_sitter_languages import get_parser
+from tree_sitter_language_pack import get_parser
 
 from app.review.context import infer_language_from_path
 from app.storage.models import CodeChunk
