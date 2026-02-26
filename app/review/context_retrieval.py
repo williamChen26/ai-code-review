@@ -49,11 +49,11 @@ async def _find_changed_line_chunks(
     end_line = max(lines)
     return await anyio.to_thread.run_sync(
         find_chunks_for_line_range,
-        storage_client=storage_client,
-        repo_id=repo_id,
-        path=file_change.path,
-        start_line=start_line,
-        end_line=end_line,
+        storage_client,
+        repo_id,
+        file_change.path,
+        start_line,
+        end_line,
     )
 
 
@@ -68,10 +68,10 @@ async def _vector_search_chunks(
     embedding = await llm_client.embed_texts(model=embedding_model, texts=[query])
     return await anyio.to_thread.run_sync(
         search_similar_chunks,
-        storage_client=storage_client,
-        repo_id=repo_id,
-        query_embedding=embedding[0],
-        limit=TOP_K_SIMILAR,
+        storage_client,
+        repo_id,
+        embedding[0],
+        TOP_K_SIMILAR,
     )
 
 

@@ -56,6 +56,7 @@ class RepoSyncConfig(BaseModel):
 
     base_dir: str
     git_bin: str
+    clone_url: str
 
 
 class AppConfig(BaseModel):
@@ -117,6 +118,7 @@ def load_config_from_env(environ: Mapping[str, str]) -> AppConfig:
             "INDEX_EMBED_DIM",
             "INDEX_REPO_BASE_DIR",
             "INDEX_GIT_BIN",
+            "INDEX_REPO_CLONE_URL",
         ),
         group_name="indexing",
     )
@@ -144,6 +146,7 @@ def load_config_from_env(environ: Mapping[str, str]) -> AppConfig:
         repo_sync=RepoSyncConfig(
             base_dir=indexing_raw["INDEX_REPO_BASE_DIR"],
             git_bin=indexing_raw["INDEX_GIT_BIN"],
+            clone_url=indexing_raw["INDEX_REPO_CLONE_URL"],
         ),
         gitlab=(
             None

@@ -23,7 +23,10 @@ from app.config import IndexStorageConfig
 from app.config import RepoSyncConfig
 from app.gitlab.adapter import build_review_context_from_gitlab_changes
 from app.gitlab.client import GitLabClient
+from app.gitlab.schemas import GitLabMergeRequestChanges
 from app.gitlab.schemas import GitLabMergeRequestWebhookEvent
+from app.github.schemas import GitHubPullRequestFile
+from app.github.schemas import GitHubPullRequestWebhookEvent
 from app.indexing.indexer import build_repo_id
 from app.indexing.indexer import ensure_initial_index
 from app.indexing.indexer import index_repo_incremental
@@ -46,6 +49,7 @@ class ReviewOrchestrator:
     storage_client: IndexStorageClient
     repo_syncer: RepoSyncer
     embedding_model: str
+    repo_clone_url: str
 
 
 def build_review_orchestrator(
@@ -63,6 +67,7 @@ def build_review_orchestrator(
         storage_client=storage_client,
         repo_syncer=repo_syncer,
         embedding_model=embedding.model,
+        repo_clone_url=repo_sync.clone_url,
     )
 
 
@@ -137,7 +142,7 @@ def build_webhook_handler(
         index_branch = _resolve_index_branch(target_branch=event.object_attributes.target_branch)
         repo_dir = orchestrator.repo_syncer.ensure_repo(
             repo_id=repo_id,
-            clone_url=f"{event.project.web_url}.git",
+            clone_url=orchestrator.repo_clone_url,
             target_branch=index_branch,
             token=config.token,
             token_user="oauth2",
@@ -165,7 +170,7 @@ def build_github_webhook_handler(
     config: GitHubConfig,
     http_client: httpx.AsyncClient,
     orchestrator: ReviewOrchestrator,
-) -> Callable[["GitHubPullRequestWebhookEvent"], Awaitable[None]]:
+) -> Callable[[GitHubPullRequestWebhookEvent], Awaitable[None]]:
     """
     装配 GitHub webhook handler：
     - 拉取 PR files/patch
@@ -174,8 +179,6 @@ def build_github_webhook_handler(
     """
     from app.github.adapter import build_review_context_from_github_pull_request_files
     from app.github.client import GitHubClient
-    from app.github.schemas import GitHubPullRequestWebhookEvent
-
     github_client = GitHubClient(api_base_url=str(config.api_base_url).rstrip("/"), token=config.token, http_client=http_client)
 
     async def handle(event: GitHubPullRequestWebhookEvent) -> None:
@@ -197,7 +200,7 @@ def build_github_webhook_handler(
         index_branch = _resolve_index_branch(target_branch=event.pull_request.base.ref)
         repo_dir = orchestrator.repo_syncer.ensure_repo(
             repo_id=repo_id,
-            clone_url=event.repository.clone_url,
+            clone_url=orchestrator.repo_clone_url,
             target_branch=index_branch,
             token=config.token,
             token_user="x-access-token",
@@ -238,16 +241,15 @@ async def _handle_gitlab_merge_indexing(
     orchestrator: ReviewOrchestrator,
     config: GitLabConfig,
     event: GitLabMergeRequestWebhookEvent,
-    changes: "GitLabMergeRequestChanges",
+    changes: GitLabMergeRequestChanges,
 ) -> None:
     target_branch = event.object_attributes.target_branch
     if target_branch != "main":
         return
     repo_id = build_repo_id(provider="gitlab", repo_key=str(event.project.id))
-    clone_url = f"{event.project.web_url}.git"
     repo_dir = orchestrator.repo_syncer.ensure_repo(
         repo_id=repo_id,
-        clone_url=clone_url,
+        clone_url=orchestrator.repo_clone_url,
         target_branch=target_branch,
         token=config.token,
         token_user="oauth2",
@@ -276,8 +278,8 @@ async def _handle_gitlab_merge_indexing(
 async def _handle_github_merge_indexing(
     orchestrator: ReviewOrchestrator,
     config: GitHubConfig,
-    event: "GitHubPullRequestWebhookEvent",
-    files: list["GitHubPullRequestFile"],
+    event: GitHubPullRequestWebhookEvent,
+    files: list[GitHubPullRequestFile],
 ) -> None:
     target_branch = event.pull_request.base.ref
     if target_branch != "main":
@@ -285,7 +287,7 @@ async def _handle_github_merge_indexing(
     repo_id = build_repo_id(provider="github", repo_key=event.repository.full_name)
     repo_dir = orchestrator.repo_syncer.ensure_repo(
         repo_id=repo_id,
-        clone_url=event.repository.clone_url,
+        clone_url=orchestrator.repo_clone_url,
         target_branch=target_branch,
         token=config.token,
         token_user="x-access-token",

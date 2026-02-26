@@ -58,18 +58,8 @@ async def index_repo_incremental(
     deleted_paths: Sequence[str],
 ) -> None:
     if deleted_paths:
-        await anyio.to_thread.run_sync(
-            delete_file_index_entries,
-            storage_client=storage_client,
-            repo_id=repo_id,
-            paths=list(deleted_paths),
-        )
-        await anyio.to_thread.run_sync(
-            delete_code_chunks,
-            storage_client=storage_client,
-            repo_id=repo_id,
-            paths=list(deleted_paths),
-        )
+        await anyio.to_thread.run_sync(delete_file_index_entries, storage_client, repo_id, list(deleted_paths))
+        await anyio.to_thread.run_sync(delete_code_chunks, storage_client, repo_id, list(deleted_paths))
     if not changed_paths:
         return
     await _index_paths(
@@ -89,7 +79,7 @@ async def ensure_initial_index(
     repo_id: str,
     repo_dir: str,
 ) -> bool:
-    indexed = await anyio.to_thread.run_sync(list_indexed_paths, storage_client=storage_client, repo_id=repo_id)
+    indexed = await anyio.to_thread.run_sync(list_indexed_paths, storage_client, repo_id)
     if indexed:
         return False
     await index_repo_full(
@@ -139,20 +129,9 @@ async def _index_paths(
             embedding_model=embedding_model,
             chunks=[c.content for c in chunks],
         )
-        await anyio.to_thread.run_sync(
-            replace_code_chunks,
-            storage_client=storage_client,
-            repo_id=repo_id,
-            path=path,
-            chunks=chunks,
-            embeddings=embeddings,
-        )
+        await anyio.to_thread.run_sync(replace_code_chunks, storage_client, repo_id, path, chunks, embeddings)
     if entries:
-        await anyio.to_thread.run_sync(
-            upsert_file_index_entries,
-            storage_client=storage_client,
-            entries=entries,
-        )
+        await anyio.to_thread.run_sync(upsert_file_index_entries, storage_client, entries)
 
 
 async def _embed_chunks(

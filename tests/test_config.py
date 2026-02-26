@@ -20,6 +20,7 @@ def test_load_config_requires_at_least_one_scm() -> None:
         "INDEX_EMBED_DIM": "3072",
         "INDEX_REPO_BASE_DIR": "/tmp/repos",
         "INDEX_GIT_BIN": "git",
+        "INDEX_REPO_CLONE_URL": "git@github.com:owner/repo.git",
     }
     with pytest.raises(ValueError):
         load_config_from_env(environ=environ)
@@ -35,6 +36,7 @@ def test_load_config_gitlab_only_ok() -> None:
         "INDEX_EMBED_DIM": "3072",
         "INDEX_REPO_BASE_DIR": "/tmp/repos",
         "INDEX_GIT_BIN": "git",
+        "INDEX_REPO_CLONE_URL": "git@github.com:owner/repo.git",
         "GITLAB_BASE_URL": "https://gitlab.example.com",
         "GITLAB_TOKEN": "t",
         "GITLAB_WEBHOOK_SECRET": "s",
@@ -54,6 +56,7 @@ def test_load_config_github_only_ok() -> None:
         "INDEX_EMBED_DIM": "3072",
         "INDEX_REPO_BASE_DIR": "/tmp/repos",
         "INDEX_GIT_BIN": "git",
+        "INDEX_REPO_CLONE_URL": "git@github.com:owner/repo.git",
         "GITHUB_API_BASE_URL": "https://api.github.com",
         "GITHUB_TOKEN": "t",
         "GITHUB_WEBHOOK_SECRET": "s",
@@ -73,6 +76,7 @@ def test_load_config_rejects_partial_gitlab() -> None:
         "INDEX_EMBED_DIM": "3072",
         "INDEX_REPO_BASE_DIR": "/tmp/repos",
         "INDEX_GIT_BIN": "git",
+        "INDEX_REPO_CLONE_URL": "git@github.com:owner/repo.git",
         "GITLAB_BASE_URL": "https://gitlab.example.com",
         "GITLAB_TOKEN": "t",
     }
@@ -90,6 +94,7 @@ def test_load_config_rejects_partial_github() -> None:
         "INDEX_EMBED_DIM": "3072",
         "INDEX_REPO_BASE_DIR": "/tmp/repos",
         "INDEX_GIT_BIN": "git",
+        "INDEX_REPO_CLONE_URL": "git@github.com:owner/repo.git",
         "GITHUB_API_BASE_URL": "https://api.github.com",
         "GITHUB_TOKEN": "t",
     }

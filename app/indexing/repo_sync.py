@@ -38,6 +38,8 @@ def _repo_dir(base_dir: str, repo_id: str) -> str:
 
 
 def _inject_token(clone_url: str, token: str | None, token_user: str | None) -> str:
+    if clone_url.startswith("git@") or clone_url.startswith("ssh://"):
+        return clone_url
     if token is None or token_user is None:
         return clone_url
     parsed = urlparse(clone_url)
