@@ -1,8 +1,18 @@
+"""
+上下文检索：为每个文件变更构建 AI Code Review 所需的上下文包。
+
+两种检索策略：
+1. line_chunks —— 精确定位：根据 diff 改动行号，从索引库中找出覆盖这些行的代码块
+2. similar_chunks —— 语义召回：将 diff 内容做 embedding，从向量库中检索语义相似的代码块
+
+两者合并去重后，格式化为上下文文本注入 LLM prompt。
+"""
+
 from __future__ import annotations
 
 import anyio
 
-from app.llm.client import OpenAICompatLLMClient
+from app.llm.embedding import embed_texts
 from app.review.diff_parser import extract_changed_line_numbers
 from app.review.models import FileChange
 from app.storage.models import CodeChunk
@@ -16,11 +26,12 @@ TOP_K_SIMILAR = 8
 
 async def build_context_package_for_change(
     storage_client: IndexStorageClient,
-    llm_client: OpenAICompatLLMClient,
     embedding_model: str,
+    embedding_api_base: str,
     repo_id: str,
     file_change: FileChange,
 ) -> str:
+    """为单个文件变更构建上下文包（line_chunks + similar_chunks 合并）。"""
     line_chunks = await _find_changed_line_chunks(
         storage_client=storage_client,
         repo_id=repo_id,
@@ -28,8 +39,8 @@ async def build_context_package_for_change(
     )
     similar_chunks = await _vector_search_chunks(
         storage_client=storage_client,
-        llm_client=llm_client,
         embedding_model=embedding_model,
+        embedding_api_base=embedding_api_base,
         repo_id=repo_id,
         file_change=file_change,
     )
@@ -59,18 +70,20 @@ async def _find_changed_line_chunks(
 
 async def _vector_search_chunks(
     storage_client: IndexStorageClient,
-    llm_client: OpenAICompatLLMClient,
     embedding_model: str,
+    embedding_api_base: str,
     repo_id: str,
     file_change: FileChange,
 ) -> list[CodeChunk]:
+    """语义召回：将 diff 内容 embedding 后，从向量库检索最相似的代码块。"""
     query = f"path: {file_change.path}\n{file_change.diff}"
-    embedding = await llm_client.embed_texts(model=embedding_model, texts=[query])
+    # 直接调用 litellm embedding，不再经过 LLM Client
+    embedding_result = await embed_texts(model=embedding_model, api_base=embedding_api_base, texts=[query])
     return await anyio.to_thread.run_sync(
         search_similar_chunks,
         storage_client,
         repo_id,
-        embedding[0],
+        embedding_result[0],
         TOP_K_SIMILAR,
     )
 

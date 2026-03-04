@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
 from urllib.parse import urlparse, urlunparse
 
@@ -20,16 +21,29 @@ class RepoSyncer:
         os.makedirs(self._base_dir, exist_ok=True)
         auth_url = _inject_token(clone_url=clone_url, token=token, token_user=token_user)
 
+        if os.path.exists(repo_dir) and not _is_valid_git_repo(self._git_bin, repo_dir):
+            logger.warning(f"Removing corrupted/incomplete repo directory: {repo_dir}")
+            shutil.rmtree(repo_dir)
+
         if not os.path.exists(repo_dir):
             _run_git(self._git_bin, ["clone", "--branch", target_branch, auth_url, repo_dir], None)
             return repo_dir
-        if not os.path.exists(os.path.join(repo_dir, ".git")):
-            raise RuntimeError(f"Repo directory exists but is not a git repo: {repo_dir}")
 
         _run_git(self._git_bin, ["fetch", "--prune", "origin"], repo_dir)
         _run_git(self._git_bin, ["checkout", target_branch], repo_dir)
         _run_git(self._git_bin, ["pull", "origin", target_branch], repo_dir)
         return repo_dir
+
+
+def _is_valid_git_repo(git_bin: str, repo_dir: str) -> bool:
+    """检查目录是否为有效的 git 仓库（防止 clone 中途失败留下损坏目录）。"""
+    result = subprocess.run(
+        [git_bin, "rev-parse", "--git-dir"],
+        cwd=repo_dir,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
 
 
 def _repo_dir(base_dir: str, repo_id: str) -> str:

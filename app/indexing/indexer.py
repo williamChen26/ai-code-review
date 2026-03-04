@@ -1,3 +1,14 @@
+"""
+索引构建器。
+
+职责：
+- 首次全量索引（ensure_initial_index / index_repo_full）
+- 增量索引（index_repo_incremental）
+- 对每个文件：扫描 → tree-sitter 切块 → embedding → 写入数据库
+
+Embedding 调用已从 LLM Client 剥离，直接使用 app.llm.embedding 模块（litellm SDK）。
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -8,6 +19,7 @@ import anyio
 
 from app.indexing.chunker import chunk_file
 from app.indexing.file_scanner import scan_repo_files
+from app.llm.embedding import embed_texts
 from app.review.context import infer_language_from_path
 from app.storage.models import FileIndexEntry
 from app.storage.pg import IndexStorageClient
@@ -16,10 +28,8 @@ from app.storage.pg import delete_file_index_entries
 from app.storage.pg import list_indexed_paths
 from app.storage.pg import replace_code_chunks
 from app.storage.pg import upsert_file_index_entries
-from app.llm.client import OpenAICompatLLMClient
 
 MAX_FILE_BYTES = 1_000_000
-EMBED_BATCH_SIZE = 32
 ALLOWED_EXTENSIONS = {".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".java", ".rb", ".php", ".rs", ".sql"}
 
 
@@ -31,17 +41,18 @@ def build_repo_id(provider: str, repo_key: str) -> str:
 
 async def index_repo_full(
     storage_client: IndexStorageClient,
-    llm_client: OpenAICompatLLMClient,
     embedding_model: str,
+    embedding_api_base: str,
     repo_id: str,
     repo_dir: str,
 ) -> None:
+    """全量索引：扫描仓库所有符合条件的文件，切块 + embedding + 写库。"""
     files = scan_repo_files(repo_dir=repo_dir, allowed_extensions=ALLOWED_EXTENSIONS, max_bytes=MAX_FILE_BYTES)
     relative_paths = [os.path.relpath(path, repo_dir) for path in files]
     await _index_paths(
         storage_client=storage_client,
-        llm_client=llm_client,
         embedding_model=embedding_model,
+        embedding_api_base=embedding_api_base,
         repo_id=repo_id,
         repo_dir=repo_dir,
         paths=relative_paths,
@@ -50,13 +61,14 @@ async def index_repo_full(
 
 async def index_repo_incremental(
     storage_client: IndexStorageClient,
-    llm_client: OpenAICompatLLMClient,
     embedding_model: str,
+    embedding_api_base: str,
     repo_id: str,
     repo_dir: str,
     changed_paths: Sequence[str],
     deleted_paths: Sequence[str],
 ) -> None:
+    """增量索引：只处理变更和删除的文件，不重算全仓。"""
     if deleted_paths:
         await anyio.to_thread.run_sync(delete_file_index_entries, storage_client, repo_id, list(deleted_paths))
         await anyio.to_thread.run_sync(delete_code_chunks, storage_client, repo_id, list(deleted_paths))
@@ -64,8 +76,8 @@ async def index_repo_incremental(
         return
     await _index_paths(
         storage_client=storage_client,
-        llm_client=llm_client,
         embedding_model=embedding_model,
+        embedding_api_base=embedding_api_base,
         repo_id=repo_id,
         repo_dir=repo_dir,
         paths=changed_paths,
@@ -74,18 +86,19 @@ async def index_repo_incremental(
 
 async def ensure_initial_index(
     storage_client: IndexStorageClient,
-    llm_client: OpenAICompatLLMClient,
     embedding_model: str,
+    embedding_api_base: str,
     repo_id: str,
     repo_dir: str,
 ) -> bool:
+    """若该 repo_id 尚无索引，则执行全量构建；已有则跳过，返回是否执行了构建。"""
     indexed = await anyio.to_thread.run_sync(list_indexed_paths, storage_client, repo_id)
     if indexed:
         return False
     await index_repo_full(
         storage_client=storage_client,
-        llm_client=llm_client,
         embedding_model=embedding_model,
+        embedding_api_base=embedding_api_base,
         repo_id=repo_id,
         repo_dir=repo_dir,
     )
@@ -94,12 +107,13 @@ async def ensure_initial_index(
 
 async def _index_paths(
     storage_client: IndexStorageClient,
-    llm_client: OpenAICompatLLMClient,
     embedding_model: str,
+    embedding_api_base: str,
     repo_id: str,
     repo_dir: str,
     paths: Sequence[str],
 ) -> None:
+    """对指定路径列表执行：读取 → 切块 → embedding → 写库。"""
     entries: list[FileIndexEntry] = []
     for path in paths:
         full_path = os.path.join(repo_dir, path)
@@ -124,29 +138,15 @@ async def _index_paths(
             )
         )
         chunks = chunk_file(repo_id=repo_id, path=path, content=content)
-        embeddings = await _embed_chunks(
-            llm_client=llm_client,
-            embedding_model=embedding_model,
-            chunks=[c.content for c in chunks],
+        # 直接调用 litellm embedding，不再经过 LLM Client
+        embeddings = await embed_texts(
+            model=embedding_model,
+            api_base=embedding_api_base,
+            texts=[c.content for c in chunks],
         )
         await anyio.to_thread.run_sync(replace_code_chunks, storage_client, repo_id, path, chunks, embeddings)
     if entries:
         await anyio.to_thread.run_sync(upsert_file_index_entries, storage_client, entries)
-
-
-async def _embed_chunks(
-    llm_client: OpenAICompatLLMClient,
-    embedding_model: str,
-    chunks: Sequence[str],
-) -> list[list[float]]:
-    if not chunks:
-        raise ValueError("chunks must not be empty")
-    embeddings: list[list[float]] = []
-    for i in range(0, len(chunks), EMBED_BATCH_SIZE):
-        batch = chunks[i : i + EMBED_BATCH_SIZE]
-        batch_embeddings = await llm_client.embed_texts(model=embedding_model, texts=batch)
-        embeddings.extend(batch_embeddings)
-    return embeddings
 
 
 def _read_text_file(path: str) -> str:

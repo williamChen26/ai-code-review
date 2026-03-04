@@ -43,12 +43,21 @@ from app.storage.pg import ensure_schema
 
 @dataclass(frozen=True)
 class ReviewOrchestrator:
-    """Orchestrator 运行时依赖集合（目前只需要 LLM client）。"""
+    """Orchestrator 运行时依赖集合。
+
+    - llm_client: 用于聊天补全（risk planning / file review）
+    - storage_client: 索引/向量库客户端
+    - repo_syncer: git clone/pull 管理
+    - embedding_model: litellm 模型标识（例如 "litellm_proxy/Embedding-3-Small"）
+    - embedding_api_base: LiteLLM Proxy 地址
+    - repo_clone_url: 仓库克隆地址
+    """
 
     llm_client: OpenAICompatLLMClient
     storage_client: IndexStorageClient
     repo_syncer: RepoSyncer
     embedding_model: str
+    embedding_api_base: str
     repo_clone_url: str
 
 
@@ -67,6 +76,7 @@ def build_review_orchestrator(
         storage_client=storage_client,
         repo_syncer=repo_syncer,
         embedding_model=embedding.model,
+        embedding_api_base=embedding.api_base,
         repo_clone_url=repo_sync.clone_url,
     )
 
@@ -90,8 +100,8 @@ async def run_review(
     for change in context.changes:
         context_by_path[change.path] = await build_context_package_for_change(
             storage_client=orchestrator.storage_client,
-            llm_client=orchestrator.llm_client,
             embedding_model=orchestrator.embedding_model,
+            embedding_api_base=orchestrator.embedding_api_base,
             repo_id=repo_id,
             file_change=change,
         )
@@ -149,8 +159,8 @@ def build_webhook_handler(
         )
         await ensure_initial_index(
             storage_client=orchestrator.storage_client,
-            llm_client=orchestrator.llm_client,
             embedding_model=orchestrator.embedding_model,
+            embedding_api_base=orchestrator.embedding_api_base,
             repo_id=repo_id,
             repo_dir=repo_dir,
         )
@@ -207,8 +217,8 @@ def build_github_webhook_handler(
         )
         await ensure_initial_index(
             storage_client=orchestrator.storage_client,
-            llm_client=orchestrator.llm_client,
             embedding_model=orchestrator.embedding_model,
+            embedding_api_base=orchestrator.embedding_api_base,
             repo_id=repo_id,
             repo_dir=repo_dir,
         )
@@ -258,16 +268,16 @@ async def _handle_gitlab_merge_indexing(
     deleted_paths = [c.new_path for c in changes.changes if c.deleted_file]
     initial_built = await ensure_initial_index(
         storage_client=orchestrator.storage_client,
-        llm_client=orchestrator.llm_client,
         embedding_model=orchestrator.embedding_model,
+        embedding_api_base=orchestrator.embedding_api_base,
         repo_id=repo_id,
         repo_dir=repo_dir,
     )
     if not initial_built:
         await index_repo_incremental(
             storage_client=orchestrator.storage_client,
-            llm_client=orchestrator.llm_client,
             embedding_model=orchestrator.embedding_model,
+            embedding_api_base=orchestrator.embedding_api_base,
             repo_id=repo_id,
             repo_dir=repo_dir,
             changed_paths=changed_paths,
@@ -296,16 +306,16 @@ async def _handle_github_merge_indexing(
     deleted_paths = [f.filename for f in files if f.status == "removed"]
     initial_built = await ensure_initial_index(
         storage_client=orchestrator.storage_client,
-        llm_client=orchestrator.llm_client,
         embedding_model=orchestrator.embedding_model,
+        embedding_api_base=orchestrator.embedding_api_base,
         repo_id=repo_id,
         repo_dir=repo_dir,
     )
     if not initial_built:
         await index_repo_incremental(
             storage_client=orchestrator.storage_client,
-            llm_client=orchestrator.llm_client,
             embedding_model=orchestrator.embedding_model,
+            embedding_api_base=orchestrator.embedding_api_base,
             repo_id=repo_id,
             repo_dir=repo_dir,
             changed_paths=changed_paths,

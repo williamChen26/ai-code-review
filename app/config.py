@@ -39,9 +39,15 @@ class LLMConfig(BaseModel):
 
 
 class EmbeddingConfig(BaseModel):
-    """Embedding 配置（用于向量库与上下文检索）。"""
+    """Embedding 配置（用于向量库与上下文检索）。
+
+    - model: litellm 模型标识，例如 "litellm_proxy/Embedding-3-Small"
+    - api_base: LiteLLM Proxy 地址，复用 LLM_BASE_URL，无需单独配置
+    - dimension: 向量维度，用于初始化 pgvector 列
+    """
 
     model: str
+    api_base: str
     dimension: int
 
 
@@ -140,6 +146,7 @@ def load_config_from_env(environ: Mapping[str, str]) -> AppConfig:
         llm=LLMConfig(base_url=environ["LLM_BASE_URL"], api_key=environ["LLM_API_KEY"], model=environ["LLM_MODEL"]),
         embedding=EmbeddingConfig(
             model=indexing_raw["INDEX_EMBED_MODEL"],
+            api_base=str(environ["LLM_BASE_URL"]),
             dimension=int(indexing_raw["INDEX_EMBED_DIM"]),
         ),
         index_storage=IndexStorageConfig(dsn=indexing_raw["INDEX_PG_DSN"]),
