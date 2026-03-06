@@ -4,7 +4,7 @@ import litellm
 from litellm.llms.bytez.common_utils import API_BASE
 
 EMBEDDING_MODEL = "litellm_proxy/Embedding-3-Small"
-BASE_URL = "http://litellm-internal.mc-k8s-apn1.notta.io/"
+BASE_URL = "http://litellm-internal.mc-k8s-apn1.notta.io"
 TEXTS = [
     "embedding test: hello world",
     "embedding test: quick brown fox",

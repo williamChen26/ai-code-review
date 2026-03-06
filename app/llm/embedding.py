@@ -20,12 +20,11 @@ import litellm
 
 logger = logging.getLogger(__name__)
 
-# 单批次最大文本数，避免单次请求过大
+EMBEDDING_MODEL = "litellm_proxy/Embedding-3-Small"
 EMBED_BATCH_SIZE = 32
 
 
 async def embed_texts(
-    model: str,
     api_base: str,
     texts: Sequence[str],
 ) -> list[list[float]]:
@@ -33,7 +32,6 @@ async def embed_texts(
     使用 LiteLLM SDK 生成文本 embedding 向量。
 
     参数：
-    - model: litellm 模型标识，例如 "litellm_proxy/Embedding-3-Small"
     - api_base: LiteLLM Proxy 地址，例如 "http://litellm-internal.example.com/"
     - texts: 待向量化的文本列表
 
@@ -51,15 +49,18 @@ async def embed_texts(
 
     for i in range(0, len(texts), EMBED_BATCH_SIZE):
         batch = list(texts[i : i + EMBED_BATCH_SIZE])
-        logger.info(f"Embedding request: model={model}, batch={len(batch)}, offset={i}")
+        logger.info(f"Embedding request: model={EMBEDDING_MODEL}, batch={len(batch)}, offset={i}")
 
         response = await litellm.aembedding(
-            model=model,
+            model=EMBEDDING_MODEL,
             api_base=api_base,
             input=batch,
         )
 
-        batch_embeddings = [list(item.embedding) for item in response.data]
+        batch_embeddings = [
+            list(item["embedding"]) if isinstance(item, dict) else list(item.embedding)
+            for item in response.data
+        ]
         if len(batch_embeddings) != len(batch):
             raise RuntimeError(
                 f"Embedding response length mismatch: expected {len(batch)}, got {len(batch_embeddings)}"

@@ -23,10 +23,11 @@ class GitLabUser(BaseModel):
 
 
 class GitLabProject(BaseModel):
-    """Webhook 里的 project 子结构（id/web_url）。"""
+    """Webhook 里的 project 子结构（id/web_url/git_http_url）。"""
 
     id: int
     web_url: str
+    git_http_url: str
 
 
 class GitLabMergeRequestAttributes(BaseModel):

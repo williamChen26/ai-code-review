@@ -44,6 +44,8 @@ def build_github_webhook_router(config: GitHubConfig, handler: GitHubWebhookHand
         x_github_event: str = Header(alias="X-GitHub-Event"),
         x_hub_signature_256: str = Header(alias="X-Hub-Signature-256"),
     ) -> dict[str, str]:
+        # 打印
+        print(f"x_github_event: {x_github_event}")
         if x_github_event != "pull_request":
             return {"status": "ignored"}
 
@@ -55,6 +57,8 @@ def build_github_webhook_router(config: GitHubConfig, handler: GitHubWebhookHand
             raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
 
         event = GitHubPullRequestWebhookEvent.model_validate(payload)
+        # 打印
+        print(f"event: {event}")
         if event.action not in ("opened", "reopened", "synchronize", "closed"):
             return {"status": "ignored"}
 

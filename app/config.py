@@ -31,24 +31,24 @@ class GitHubConfig(BaseModel):
 
 
 class LLMConfig(BaseModel):
-    """LLM 配置（任何评审都需要）。"""
+    """LLM 配置（任何评审都需要）。
+
+    - base_url: LiteLLM Proxy 地址
+    - API Key 由 litellm 从环境变量 OPENAI_API_KEY 自动读取
+    - 模型名称在 app/llm/client.py 中硬编码
+    """
 
     base_url: HttpUrl
-    api_key: str
-    model: str
 
 
 class EmbeddingConfig(BaseModel):
     """Embedding 配置（用于向量库与上下文检索）。
 
-    - model: litellm 模型标识，例如 "litellm_proxy/Embedding-3-Small"
     - api_base: LiteLLM Proxy 地址，复用 LLM_BASE_URL，无需单独配置
-    - dimension: 向量维度，用于初始化 pgvector 列
+    - 模型名称在 app/llm/embedding.py 中硬编码
     """
 
-    model: str
     api_base: str
-    dimension: int
 
 
 class IndexStorageConfig(BaseModel):
@@ -58,11 +58,13 @@ class IndexStorageConfig(BaseModel):
 
 
 class RepoSyncConfig(BaseModel):
-    """仓库同步配置（git clone/pull）。"""
+    """仓库同步配置（git clone/pull）。
+
+    clone_url 不再需要配置，直接从 webhook 事件中获取。
+    """
 
     base_dir: str
     git_bin: str
-    clone_url: str
 
 
 class AppConfig(BaseModel):
@@ -111,7 +113,7 @@ def load_config_from_env(environ: Mapping[str, str]) -> AppConfig:
     - **失败**：缺失/为空则抛 `ValueError`
     """
 
-    llm_required: tuple[str, ...] = ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL")
+    llm_required: tuple[str, ...] = ("LLM_BASE_URL",)
     llm_missing: list[str] = [key for key in llm_required if key not in environ or not environ[key]]
     if llm_missing:
         raise ValueError(f"Missing required env vars: {', '.join(llm_missing)}")
@@ -120,11 +122,8 @@ def load_config_from_env(environ: Mapping[str, str]) -> AppConfig:
         environ=environ,
         keys=(
             "INDEX_PG_DSN",
-            "INDEX_EMBED_MODEL",
-            "INDEX_EMBED_DIM",
             "INDEX_REPO_BASE_DIR",
             "INDEX_GIT_BIN",
-            "INDEX_REPO_CLONE_URL",
         ),
         group_name="indexing",
     )
@@ -143,17 +142,14 @@ def load_config_from_env(environ: Mapping[str, str]) -> AppConfig:
         raise ValueError("At least one SCM integration must be configured: GitLab or GitHub")
 
     return AppConfig(
-        llm=LLMConfig(base_url=environ["LLM_BASE_URL"], api_key=environ["LLM_API_KEY"], model=environ["LLM_MODEL"]),
+        llm=LLMConfig(base_url=environ["LLM_BASE_URL"]),
         embedding=EmbeddingConfig(
-            model=indexing_raw["INDEX_EMBED_MODEL"],
             api_base=str(environ["LLM_BASE_URL"]),
-            dimension=int(indexing_raw["INDEX_EMBED_DIM"]),
         ),
         index_storage=IndexStorageConfig(dsn=indexing_raw["INDEX_PG_DSN"]),
         repo_sync=RepoSyncConfig(
             base_dir=indexing_raw["INDEX_REPO_BASE_DIR"],
             git_bin=indexing_raw["INDEX_GIT_BIN"],
-            clone_url=indexing_raw["INDEX_REPO_CLONE_URL"],
         ),
         gitlab=(
             None

@@ -53,15 +53,6 @@ class ReviewContext(BaseModel):
     changes: list[FileChange] = Field(default_factory=list)
 
 
-class MergeRequestContext(BaseModel):
-    """兼容：历史命名（仅 GitLab），后续可逐步迁移到 `ReviewContext`。"""
-
-    project_id: int
-    mr_iid: int
-    head_sha: str
-    changes: list[FileChange] = Field(default_factory=list)
-
-
 class RiskPlan(BaseModel):
     """Risk planner 的结构化输出（必须 JSON-only）。"""
 

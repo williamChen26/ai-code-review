@@ -41,7 +41,6 @@ def build_repo_id(provider: str, repo_key: str) -> str:
 
 async def index_repo_full(
     storage_client: IndexStorageClient,
-    embedding_model: str,
     embedding_api_base: str,
     repo_id: str,
     repo_dir: str,
@@ -51,7 +50,6 @@ async def index_repo_full(
     relative_paths = [os.path.relpath(path, repo_dir) for path in files]
     await _index_paths(
         storage_client=storage_client,
-        embedding_model=embedding_model,
         embedding_api_base=embedding_api_base,
         repo_id=repo_id,
         repo_dir=repo_dir,
@@ -61,7 +59,6 @@ async def index_repo_full(
 
 async def index_repo_incremental(
     storage_client: IndexStorageClient,
-    embedding_model: str,
     embedding_api_base: str,
     repo_id: str,
     repo_dir: str,
@@ -76,7 +73,6 @@ async def index_repo_incremental(
         return
     await _index_paths(
         storage_client=storage_client,
-        embedding_model=embedding_model,
         embedding_api_base=embedding_api_base,
         repo_id=repo_id,
         repo_dir=repo_dir,
@@ -86,7 +82,6 @@ async def index_repo_incremental(
 
 async def ensure_initial_index(
     storage_client: IndexStorageClient,
-    embedding_model: str,
     embedding_api_base: str,
     repo_id: str,
     repo_dir: str,
@@ -97,7 +92,6 @@ async def ensure_initial_index(
         return False
     await index_repo_full(
         storage_client=storage_client,
-        embedding_model=embedding_model,
         embedding_api_base=embedding_api_base,
         repo_id=repo_id,
         repo_dir=repo_dir,
@@ -107,7 +101,6 @@ async def ensure_initial_index(
 
 async def _index_paths(
     storage_client: IndexStorageClient,
-    embedding_model: str,
     embedding_api_base: str,
     repo_id: str,
     repo_dir: str,
@@ -140,7 +133,6 @@ async def _index_paths(
         chunks = chunk_file(repo_id=repo_id, path=path, content=content)
         # 直接调用 litellm embedding，不再经过 LLM Client
         embeddings = await embed_texts(
-            model=embedding_model,
             api_base=embedding_api_base,
             texts=[c.content for c in chunks],
         )

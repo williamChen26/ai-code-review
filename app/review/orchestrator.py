@@ -31,7 +31,7 @@ from app.indexing.indexer import build_repo_id
 from app.indexing.indexer import ensure_initial_index
 from app.indexing.indexer import index_repo_incremental
 from app.indexing.repo_sync import RepoSyncer
-from app.llm.client import OpenAICompatLLMClient
+from app.llm.client import LiteLLMClient
 from app.review.context_retrieval import build_context_package_for_change
 from app.review.models import ReviewContext
 from app.review.planner import plan_risk
@@ -39,6 +39,10 @@ from app.review.reviewer import review_high_risk_files
 from app.review.synthesis import synthesize_review_markdown_body
 from app.storage.pg import IndexStorageClient
 from app.storage.pg import ensure_schema
+from app.debug_utils import get_logger
+from app.debug_utils import step_tracker
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -48,36 +52,30 @@ class ReviewOrchestrator:
     - llm_client: 用于聊天补全（risk planning / file review）
     - storage_client: 索引/向量库客户端
     - repo_syncer: git clone/pull 管理
-    - embedding_model: litellm 模型标识（例如 "litellm_proxy/Embedding-3-Small"）
     - embedding_api_base: LiteLLM Proxy 地址
-    - repo_clone_url: 仓库克隆地址
     """
 
-    llm_client: OpenAICompatLLMClient
+    llm_client: LiteLLMClient
     storage_client: IndexStorageClient
     repo_syncer: RepoSyncer
-    embedding_model: str
     embedding_api_base: str
-    repo_clone_url: str
 
 
 def build_review_orchestrator(
-    llm_client: OpenAICompatLLMClient,
+    llm_client: LiteLLMClient,
     index_storage: IndexStorageConfig,
     embedding: EmbeddingConfig,
     repo_sync: RepoSyncConfig,
 ) -> ReviewOrchestrator:
     """创建 orchestrator（便于未来注入 cache/queue 等依赖）。"""
-    storage_client = IndexStorageClient(dsn=index_storage.dsn, embedding_dim=embedding.dimension)
+    storage_client = IndexStorageClient(dsn=index_storage.dsn)
     ensure_schema(storage_client)
     repo_syncer = RepoSyncer(base_dir=repo_sync.base_dir, git_bin=repo_sync.git_bin)
     return ReviewOrchestrator(
         llm_client=llm_client,
         storage_client=storage_client,
         repo_syncer=repo_syncer,
-        embedding_model=embedding.model,
         embedding_api_base=embedding.api_base,
-        repo_clone_url=repo_sync.clone_url,
     )
 
 
@@ -94,24 +92,40 @@ async def run_review(
     - Step 3: Focused Review（文件级；当前实现为逐文件 JSON 输出）
     - Step 4: Synthesize（确定性拼接/或后续可换成 LLM 无 loop）
     """
-    plan = await plan_risk(llm_client=orchestrator.llm_client, context=context)
-    repo_id = context.repo_id
-    context_by_path: dict[str, str] = {}
-    for change in context.changes:
-        context_by_path[change.path] = await build_context_package_for_change(
-            storage_client=orchestrator.storage_client,
-            embedding_model=orchestrator.embedding_model,
-            embedding_api_base=orchestrator.embedding_api_base,
-            repo_id=repo_id,
-            file_change=change,
+    with step_tracker("run_review") as tracker:
+        tracker.step(f"开始 Review, 共 {len(context.changes)} 个变更文件")
+        logger.debug(f"变更文件: {[c.path for c in context.changes]}")
+
+        tracker.step("Risk Planning - 调用 LLM 分析风险")
+        plan = await plan_risk(llm_client=orchestrator.llm_client, context=context)
+        logger.info(f"Risk Plan 结果: highRiskFiles={plan.highRiskFiles}, depth={plan.reviewDepth}")
+
+        tracker.step("构建上下文包 - 检索相关代码片段")
+        repo_id = context.repo_id
+        context_by_path: dict[str, str] = {}
+        for i, change in enumerate(context.changes):
+            tracker.substep(f"处理文件 [{i+1}/{len(context.changes)}]: {change.path}")
+            context_by_path[change.path] = await build_context_package_for_change(
+                storage_client=orchestrator.storage_client,
+                embedding_api_base=orchestrator.embedding_api_base,
+                repo_id=repo_id,
+                file_change=change,
+            )
+
+        tracker.step(f"文件级 Review - 审查 {len(plan.highRiskFiles)} 个高风险文件")
+        comments = await review_high_risk_files(
+            llm_client=orchestrator.llm_client,
+            changes=context.changes,
+            plan=plan,
+            context_by_path=context_by_path,
         )
-    comments = await review_high_risk_files(
-        llm_client=orchestrator.llm_client,
-        changes=context.changes,
-        plan=plan,
-        context_by_path=context_by_path,
-    )
-    return synthesize_review_markdown_body(head_sha=context.head_sha, plan=plan, comments=comments)
+        logger.info(f"Review 生成了 {len(comments)} 条评论")
+
+        tracker.step("合成最终评论")
+        result = synthesize_review_markdown_body(head_sha=context.head_sha, plan=plan, comments=comments)
+        logger.debug(f"最终评论长度: {len(result)} 字符")
+
+        return result
 
 
 def build_webhook_handler(
@@ -132,46 +146,67 @@ def build_webhook_handler(
 
     async def handle(event: GitLabMergeRequestWebhookEvent) -> None:
         """处理单次 MR webhook：按 action 跑 review 或增量索引。"""
-        project_id = event.project.id
-        mr_iid = event.object_attributes.iid
-        last_commit = event.object_attributes.last_commit
-        head_sha_obj = last_commit.get("id")
-        if not isinstance(head_sha_obj, str) or not head_sha_obj:
-            raise ValueError("Webhook payload missing object_attributes.last_commit.id")
+        with step_tracker("gitlab_webhook") as tracker:
+            tracker.step("解析 Webhook Event")
+            project_id = event.project.id
+            mr_iid = event.object_attributes.iid
+            last_commit = event.object_attributes.last_commit
+            head_sha_obj = last_commit.get("id")
+            logger.info(f"GitLab MR Webhook: project={project_id}, mr_iid={mr_iid}, action={event.object_attributes.action}")
 
-        changes = await gitlab_client.get_merge_request_changes(project_id=project_id, mr_iid=mr_iid)
-        if event.object_attributes.action == "merge":
-            await _handle_gitlab_merge_indexing(
-                orchestrator=orchestrator,
-                config=config,
-                event=event,
+            if not isinstance(head_sha_obj, str) or not head_sha_obj:
+                raise ValueError("Webhook payload missing object_attributes.last_commit.id")
+
+            tracker.step("获取 MR 变更列表")
+            changes = await gitlab_client.get_merge_request_changes(project_id=project_id, mr_iid=mr_iid)
+            logger.info(f"获取到 {len(changes.changes)} 个变更文件")
+
+            if event.object_attributes.action == "merge":
+                tracker.step("处理合并事件 - 增量索引")
+                await _handle_gitlab_merge_indexing(
+                    orchestrator=orchestrator,
+                    config=config,
+                    event=event,
+                    changes=changes,
+                )
+                return
+
+            tracker.step("同步仓库")
+            repo_id = build_repo_id(provider="gitlab", repo_key=str(event.project.id))
+            clone_url = event.project.git_http_url
+            index_branch = _resolve_index_branch(target_branch=event.object_attributes.target_branch)
+            logger.debug(f"repo_id={repo_id}, clone_url={clone_url}, index_branch={index_branch}")
+            repo_dir = orchestrator.repo_syncer.ensure_repo(
+                repo_id=repo_id,
+                clone_url=clone_url,
+                target_branch=index_branch,
+                token=config.token,
+                token_user="oauth2",
+            )
+            logger.debug(f"仓库同步完成: {repo_dir}")
+
+            tracker.step("确保初始索引存在")
+            await ensure_initial_index(
+                storage_client=orchestrator.storage_client,
+                embedding_api_base=orchestrator.embedding_api_base,
+                repo_id=repo_id,
+                repo_dir=repo_dir,
+            )
+
+            tracker.step("构建 Review Context")
+            context = build_review_context_from_gitlab_changes(
+                project_id=project_id,
+                mr_iid=mr_iid,
+                head_sha=head_sha_obj,
                 changes=changes,
             )
-            return
-        repo_id = build_repo_id(provider="gitlab", repo_key=str(event.project.id))
-        index_branch = _resolve_index_branch(target_branch=event.object_attributes.target_branch)
-        repo_dir = orchestrator.repo_syncer.ensure_repo(
-            repo_id=repo_id,
-            clone_url=orchestrator.repo_clone_url,
-            target_branch=index_branch,
-            token=config.token,
-            token_user="oauth2",
-        )
-        await ensure_initial_index(
-            storage_client=orchestrator.storage_client,
-            embedding_model=orchestrator.embedding_model,
-            embedding_api_base=orchestrator.embedding_api_base,
-            repo_id=repo_id,
-            repo_dir=repo_dir,
-        )
-        context = build_review_context_from_gitlab_changes(
-            project_id=project_id,
-            mr_iid=mr_iid,
-            head_sha=head_sha_obj,
-            changes=changes,
-        )
-        note_body = await run_review(orchestrator=orchestrator, context=context)
-        await gitlab_client.post_merge_request_note(project_id=project_id, mr_iid=mr_iid, body=note_body)
+
+            tracker.step("执行 AI Review")
+            note_body = await run_review(orchestrator=orchestrator, context=context)
+
+            tracker.step("发送评论到 GitLab MR")
+            await gitlab_client.post_merge_request_note(project_id=project_id, mr_iid=mr_iid, body=note_body)
+            logger.info("评论发送成功")
 
     return handle
 
@@ -192,51 +227,71 @@ def build_github_webhook_handler(
     github_client = GitHubClient(api_base_url=str(config.api_base_url).rstrip("/"), token=config.token, http_client=http_client)
 
     async def handle(event: GitHubPullRequestWebhookEvent) -> None:
-        owner = event.repository.owner.login
-        repo = event.repository.name
-        pull_number = event.pull_request.number
-        head_sha = event.pull_request.head.sha
+        with step_tracker("github_webhook") as tracker:
+            tracker.step("解析 Webhook Event")
+            owner = event.repository.owner.login
+            repo = event.repository.name
+            pull_number = event.pull_request.number
+            head_sha = event.pull_request.head.sha
+            logger.info(f"GitHub PR Webhook: {owner}/{repo}#{pull_number}, action={event.action}")
 
-        files = await github_client.list_pull_request_files(owner=owner, repo=repo, pull_number=pull_number)
-        if event.action == "closed" and event.pull_request.merged:
-            await _handle_github_merge_indexing(
-                orchestrator=orchestrator,
-                config=config,
-                event=event,
+            tracker.step("获取 PR 变更文件列表")
+            files = await github_client.list_pull_request_files(owner=owner, repo=repo, pull_number=pull_number)
+            logger.info(f"获取到 {len(files)} 个变更文件")
+
+            if event.action == "closed" and event.pull_request.merged:
+                tracker.step("处理合并事件 - 增量索引")
+                await _handle_github_merge_indexing(
+                    orchestrator=orchestrator,
+                    config=config,
+                    event=event,
+                    files=files,
+                )
+                return
+
+            tracker.step("同步仓库")
+            repo_id = build_repo_id(provider="github", repo_key=event.repository.full_name)
+            clone_url = event.repository.clone_url
+            index_branch = _resolve_index_branch(target_branch=event.pull_request.base.ref)
+            logger.debug(f"repo_id={repo_id}, clone_url={clone_url}, index_branch={index_branch}")
+            repo_dir = orchestrator.repo_syncer.ensure_repo(
+                repo_id=repo_id,
+                clone_url=clone_url,
+                target_branch=index_branch,
+                token=config.token,
+                token_user="x-access-token",
+            )
+            logger.debug(f"仓库同步完成: {repo_dir}")
+
+            tracker.step("确保初始索引存在")
+            await ensure_initial_index(
+                storage_client=orchestrator.storage_client,
+                embedding_api_base=orchestrator.embedding_api_base,
+                repo_id=repo_id,
+                repo_dir=repo_dir,
+            )
+
+            tracker.step("构建 Review Context")
+            context = build_review_context_from_github_pull_request_files(
+                owner=owner,
+                repo=repo,
+                pull_number=pull_number,
+                head_sha=head_sha,
                 files=files,
             )
-            return
-        repo_id = build_repo_id(provider="github", repo_key=event.repository.full_name)
-        index_branch = _resolve_index_branch(target_branch=event.pull_request.base.ref)
-        repo_dir = orchestrator.repo_syncer.ensure_repo(
-            repo_id=repo_id,
-            clone_url=orchestrator.repo_clone_url,
-            target_branch=index_branch,
-            token=config.token,
-            token_user="x-access-token",
-        )
-        await ensure_initial_index(
-            storage_client=orchestrator.storage_client,
-            embedding_model=orchestrator.embedding_model,
-            embedding_api_base=orchestrator.embedding_api_base,
-            repo_id=repo_id,
-            repo_dir=repo_dir,
-        )
-        context = build_review_context_from_github_pull_request_files(
-            owner=owner,
-            repo=repo,
-            pull_number=pull_number,
-            head_sha=head_sha,
-            files=files,
-        )
-        body = await run_review(orchestrator=orchestrator, context=context)
-        await github_client.create_pull_request_review(
-            owner=owner,
-            repo=repo,
-            pull_number=pull_number,
-            commit_id=context.head_sha,
-            body=body,
-        )
+
+            tracker.step("执行 AI Review")
+            body = await run_review(orchestrator=orchestrator, context=context)
+
+            tracker.step("发送 Review 到 GitHub PR")
+            await github_client.create_pull_request_review(
+                owner=owner,
+                repo=repo,
+                pull_number=pull_number,
+                commit_id=context.head_sha,
+                body=body,
+            )
+            logger.info("Review 发送成功")
 
     return handle
 
@@ -259,7 +314,7 @@ async def _handle_gitlab_merge_indexing(
     repo_id = build_repo_id(provider="gitlab", repo_key=str(event.project.id))
     repo_dir = orchestrator.repo_syncer.ensure_repo(
         repo_id=repo_id,
-        clone_url=orchestrator.repo_clone_url,
+        clone_url=event.project.git_http_url,
         target_branch=target_branch,
         token=config.token,
         token_user="oauth2",
@@ -268,7 +323,6 @@ async def _handle_gitlab_merge_indexing(
     deleted_paths = [c.new_path for c in changes.changes if c.deleted_file]
     initial_built = await ensure_initial_index(
         storage_client=orchestrator.storage_client,
-        embedding_model=orchestrator.embedding_model,
         embedding_api_base=orchestrator.embedding_api_base,
         repo_id=repo_id,
         repo_dir=repo_dir,
@@ -276,7 +330,6 @@ async def _handle_gitlab_merge_indexing(
     if not initial_built:
         await index_repo_incremental(
             storage_client=orchestrator.storage_client,
-            embedding_model=orchestrator.embedding_model,
             embedding_api_base=orchestrator.embedding_api_base,
             repo_id=repo_id,
             repo_dir=repo_dir,
@@ -297,7 +350,7 @@ async def _handle_github_merge_indexing(
     repo_id = build_repo_id(provider="github", repo_key=event.repository.full_name)
     repo_dir = orchestrator.repo_syncer.ensure_repo(
         repo_id=repo_id,
-        clone_url=orchestrator.repo_clone_url,
+        clone_url=event.repository.clone_url,
         target_branch=target_branch,
         token=config.token,
         token_user="x-access-token",
@@ -306,7 +359,6 @@ async def _handle_github_merge_indexing(
     deleted_paths = [f.filename for f in files if f.status == "removed"]
     initial_built = await ensure_initial_index(
         storage_client=orchestrator.storage_client,
-        embedding_model=orchestrator.embedding_model,
         embedding_api_base=orchestrator.embedding_api_base,
         repo_id=repo_id,
         repo_dir=repo_dir,
@@ -314,7 +366,6 @@ async def _handle_github_merge_indexing(
     if not initial_built:
         await index_repo_incremental(
             storage_client=orchestrator.storage_client,
-            embedding_model=orchestrator.embedding_model,
             embedding_api_base=orchestrator.embedding_api_base,
             repo_id=repo_id,
             repo_dir=repo_dir,

@@ -15,18 +15,18 @@ logger = logging.getLogger(__name__)
 class IndexStorageClient:
     """Postgres + pgvector 连接器。"""
 
-    def __init__(self, dsn: str, embedding_dim: int) -> None:
+    def __init__(self, dsn: str) -> None:
         self._dsn = dsn
-        self._embedding_dim = embedding_dim
+        # self._embedding_dim = embedding_dim
 
     def connect(self) -> psycopg.Connection:
         conn = psycopg.connect(self._dsn)
         register_vector(conn)
         return conn
 
-    @property
-    def embedding_dim(self) -> int:
-        return self._embedding_dim
+    # @property
+    # def embedding_dim(self) -> int:
+    #     return self._embedding_dim
 
 
 def ensure_schema(client: IndexStorageClient) -> None:
@@ -55,7 +55,7 @@ def ensure_schema(client: IndexStorageClient) -> None:
                     end_line INTEGER NOT NULL,
                     content TEXT NOT NULL,
                     checksum TEXT NOT NULL,
-                    embedding VECTOR({client.embedding_dim}) NOT NULL
+                    embedding VECTOR NOT NULL
                 )
                 """
             )
@@ -156,7 +156,7 @@ def search_similar_chunks(
                 SELECT repo_id, path, symbol_name, symbol_type, start_line, end_line, content, checksum
                 FROM code_chunks
                 WHERE repo_id = %s
-                ORDER BY embedding <-> %s
+                ORDER BY embedding <-> %s::vector
                 LIMIT %s
                 """,
                 (repo_id, list(query_embedding), limit),

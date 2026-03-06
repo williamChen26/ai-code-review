@@ -14,7 +14,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from app.llm.client import ChatMessage
-from app.llm.client import OpenAICompatLLMClient
+from app.llm.client import LiteLLMClient
 from app.review.models import FileChange
 from app.review.models import ReviewComment
 from app.review.models import RiskPlan
@@ -63,7 +63,7 @@ def _file_review_user_prompt(file_change: FileChange, plan: RiskPlan, context_pa
 
 
 async def review_high_risk_files(
-    llm_client: OpenAICompatLLMClient,
+    llm_client: LiteLLMClient,
     changes: list[FileChange],
     plan: RiskPlan,
     context_by_path: dict[str, str],

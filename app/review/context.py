@@ -8,10 +8,6 @@ Context Builder（非 AI）。
 
 from __future__ import annotations
 
-from app.gitlab.schemas import GitLabMergeRequestChanges
-from app.review.models import FileChange
-from app.review.models import MergeRequestContext
-
 
 def infer_language_from_path(path: str) -> str:
     """
@@ -41,33 +37,5 @@ def infer_language_from_path(path: str) -> str:
         return "sql"
     return "unknown"
 
-
-def build_merge_request_context(
-    project_id: int,
-    mr_iid: int,
-    head_sha: str,
-    changes: GitLabMergeRequestChanges,
-) -> MergeRequestContext:
-    """
-    将 GitLab MR changes 转为内部上下文对象。
-
-    - project_id/mr_iid/head_sha：用于后续幂等与写回 GitLab
-    - changes：包含每个文件的 diff/重命名/新增/删除信息
-    """
-    file_changes: list[FileChange] = []
-    for c in changes.changes:
-        path = c.new_path
-        file_changes.append(
-            FileChange(
-                path=path,
-                diff=c.diff,
-                language=infer_language_from_path(path=path),
-                is_new_file=c.new_file,
-                is_deleted_file=c.deleted_file,
-                is_renamed_file=c.renamed_file,
-            )
-        )
-
-    return MergeRequestContext(project_id=project_id, mr_iid=mr_iid, head_sha=head_sha, changes=file_changes)
 
 

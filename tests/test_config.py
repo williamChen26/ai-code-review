@@ -13,14 +13,9 @@ def test_load_config_requires_llm() -> None:
 def test_load_config_requires_at_least_one_scm() -> None:
     environ = {
         "LLM_BASE_URL": "https://llm.example.com",
-        "LLM_API_KEY": "k",
-        "LLM_MODEL": "m",
         "INDEX_PG_DSN": "postgresql://user:pass@localhost:5432/db",
-        "INDEX_EMBED_MODEL": "litellm_proxy/Embedding-3-Small",
-        "INDEX_EMBED_DIM": "1536",
         "INDEX_REPO_BASE_DIR": "/tmp/repos",
         "INDEX_GIT_BIN": "git",
-        "INDEX_REPO_CLONE_URL": "git@github.com:owner/repo.git",
     }
     with pytest.raises(ValueError):
         load_config_from_env(environ=environ)
@@ -29,14 +24,9 @@ def test_load_config_requires_at_least_one_scm() -> None:
 def test_load_config_gitlab_only_ok() -> None:
     environ = {
         "LLM_BASE_URL": "https://llm.example.com",
-        "LLM_API_KEY": "k",
-        "LLM_MODEL": "m",
         "INDEX_PG_DSN": "postgresql://user:pass@localhost:5432/db",
-        "INDEX_EMBED_MODEL": "litellm_proxy/Embedding-3-Small",
-        "INDEX_EMBED_DIM": "1536",
         "INDEX_REPO_BASE_DIR": "/tmp/repos",
         "INDEX_GIT_BIN": "git",
-        "INDEX_REPO_CLONE_URL": "git@github.com:owner/repo.git",
         "GITLAB_BASE_URL": "https://gitlab.example.com",
         "GITLAB_TOKEN": "t",
         "GITLAB_WEBHOOK_SECRET": "s",
@@ -49,14 +39,9 @@ def test_load_config_gitlab_only_ok() -> None:
 def test_load_config_github_only_ok() -> None:
     environ = {
         "LLM_BASE_URL": "https://llm.example.com",
-        "LLM_API_KEY": "k",
-        "LLM_MODEL": "m",
         "INDEX_PG_DSN": "postgresql://user:pass@localhost:5432/db",
-        "INDEX_EMBED_MODEL": "litellm_proxy/Embedding-3-Small",
-        "INDEX_EMBED_DIM": "1536",
         "INDEX_REPO_BASE_DIR": "/tmp/repos",
         "INDEX_GIT_BIN": "git",
-        "INDEX_REPO_CLONE_URL": "git@github.com:owner/repo.git",
         "GITHUB_API_BASE_URL": "https://api.github.com",
         "GITHUB_TOKEN": "t",
         "GITHUB_WEBHOOK_SECRET": "s",
@@ -69,14 +54,9 @@ def test_load_config_github_only_ok() -> None:
 def test_load_config_rejects_partial_gitlab() -> None:
     environ = {
         "LLM_BASE_URL": "https://llm.example.com",
-        "LLM_API_KEY": "k",
-        "LLM_MODEL": "m",
         "INDEX_PG_DSN": "postgresql://user:pass@localhost:5432/db",
-        "INDEX_EMBED_MODEL": "litellm_proxy/Embedding-3-Small",
-        "INDEX_EMBED_DIM": "1536",
         "INDEX_REPO_BASE_DIR": "/tmp/repos",
         "INDEX_GIT_BIN": "git",
-        "INDEX_REPO_CLONE_URL": "git@github.com:owner/repo.git",
         "GITLAB_BASE_URL": "https://gitlab.example.com",
         "GITLAB_TOKEN": "t",
     }
@@ -87,14 +67,9 @@ def test_load_config_rejects_partial_gitlab() -> None:
 def test_load_config_rejects_partial_github() -> None:
     environ = {
         "LLM_BASE_URL": "https://llm.example.com",
-        "LLM_API_KEY": "k",
-        "LLM_MODEL": "m",
         "INDEX_PG_DSN": "postgresql://user:pass@localhost:5432/db",
-        "INDEX_EMBED_MODEL": "litellm_proxy/Embedding-3-Small",
-        "INDEX_EMBED_DIM": "1536",
         "INDEX_REPO_BASE_DIR": "/tmp/repos",
         "INDEX_GIT_BIN": "git",
-        "INDEX_REPO_CLONE_URL": "git@github.com:owner/repo.git",
         "GITHUB_API_BASE_URL": "https://api.github.com",
         "GITHUB_TOKEN": "t",
     }

@@ -26,7 +26,6 @@ TOP_K_SIMILAR = 8
 
 async def build_context_package_for_change(
     storage_client: IndexStorageClient,
-    embedding_model: str,
     embedding_api_base: str,
     repo_id: str,
     file_change: FileChange,
@@ -39,7 +38,6 @@ async def build_context_package_for_change(
     )
     similar_chunks = await _vector_search_chunks(
         storage_client=storage_client,
-        embedding_model=embedding_model,
         embedding_api_base=embedding_api_base,
         repo_id=repo_id,
         file_change=file_change,
@@ -70,15 +68,13 @@ async def _find_changed_line_chunks(
 
 async def _vector_search_chunks(
     storage_client: IndexStorageClient,
-    embedding_model: str,
     embedding_api_base: str,
     repo_id: str,
     file_change: FileChange,
 ) -> list[CodeChunk]:
     """语义召回：将 diff 内容 embedding 后，从向量库检索最相似的代码块。"""
     query = f"path: {file_change.path}\n{file_change.diff}"
-    # 直接调用 litellm embedding，不再经过 LLM Client
-    embedding_result = await embed_texts(model=embedding_model, api_base=embedding_api_base, texts=[query])
+    embedding_result = await embed_texts(api_base=embedding_api_base, texts=[query])
     return await anyio.to_thread.run_sync(
         search_similar_chunks,
         storage_client,

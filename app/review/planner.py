@@ -12,7 +12,7 @@ Risk Planner（LLM 单次输出，不 loop）。
 from __future__ import annotations
 
 from app.llm.client import ChatMessage
-from app.llm.client import OpenAICompatLLMClient
+from app.llm.client import LiteLLMClient
 from app.review.models import ReviewContext
 from app.review.models import RiskPlan
 import logging
@@ -42,7 +42,7 @@ def _planner_user_prompt(context: ReviewContext) -> str:
     )
 
 
-async def plan_risk(llm_client: OpenAICompatLLMClient, context: ReviewContext) -> RiskPlan:
+async def plan_risk(llm_client: LiteLLMClient, context: ReviewContext) -> RiskPlan:
     """
     执行 risk planning，并做工程侧兜底过滤：
     - highRiskFiles 必须属于本次变更文件（避免模型输出不存在路径）
