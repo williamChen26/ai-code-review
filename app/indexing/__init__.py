@@ -1,1 +1,1 @@
-"""Indexing pipeline (repo sync, AST, chunking, embedding)."""
+"""Indexing pipeline (repo sync, AST parsing, symbol extraction, embedding)."""

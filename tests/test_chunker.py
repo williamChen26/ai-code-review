@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from app.indexing.chunker import chunk_file
+from app.indexing.parser import parse_file
 
 
-def test_chunk_file_includes_imports_and_function() -> None:
+def test_parse_file_extracts_imports_and_function() -> None:
     content = "\n".join(
         [
             "import os",
@@ -13,7 +13,23 @@ def test_chunk_file_includes_imports_and_function() -> None:
             "    return a + b",
         ]
     )
-    chunks = chunk_file(repo_id="github:owner/repo", path="src/app.py", content=content)
-    kinds = {c.symbol_type for c in chunks}
-    assert "module_imports" in kinds
-    assert "function_definition" in kinds
+    parsed = parse_file(path="src/app.py", content=content, language="python")
+    assert len(parsed.imports) >= 2
+    assert any(s.name == "add" and s.kind == "function" for s in parsed.symbols)
+    assert parsed.summary_material  # should contain file summary
+
+
+def test_parse_file_extracts_calls() -> None:
+    content = "\n".join(
+        [
+            "def greet(name: str) -> str:",
+            "    result = format_name(name)",
+            "    print(result)",
+            "    return result",
+        ]
+    )
+    parsed = parse_file(path="src/greet.py", content=content, language="python")
+    assert len(parsed.symbols) == 1
+    sym = parsed.symbols[0]
+    assert "format_name" in sym.calls
+    assert "print" in sym.calls

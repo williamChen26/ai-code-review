@@ -1,12 +1,14 @@
 """
 Review Orchestrator（核心流程编排）。
 
-关键思想（你强调的那点）：
-- **流程由工程代码控制**：明确的 4 阶段 pipeline
-- **LLM 只负责“思考/生成结构化输出”**：planner 单次，reviewer 可扩展为受控 ReAct
+关键思想：
+- **流程由工程代码控制**：明确的 pipeline 阶段
+- **LLM 只负责"思考/生成结构化输出"**：planner 单次，reviewer 逐文件
 
-目前的最小闭环：
-Webhook -> get MR changes -> build context -> plan risk -> review -> synthesize -> post MR note
+流程：
+Webhook -> get changes -> sync repo -> ensure index
+       -> diff → changed symbols → related symbols → context
+       -> plan risk -> review -> synthesize -> post comment
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from app.indexing.indexer import ensure_initial_index
 from app.indexing.indexer import index_repo_incremental
 from app.indexing.repo_sync import RepoSyncer
 from app.llm.client import LiteLLMClient
+from app.review.context_retrieval import ReviewContextPackage
 from app.review.context_retrieval import build_context_package_for_change
 from app.review.models import ReviewContext
 from app.review.planner import plan_risk
@@ -83,26 +86,27 @@ async def run_review(
     orchestrator: ReviewOrchestrator,
     context: ReviewContext,
 ) -> str:
-    """
-    跑一次完整 review，返回最终要写回 GitLab 的评论正文。
+    """跑一次完整 review，返回最终要写回 GitLab/GitHub 的评论正文。
 
-    4 阶段：
-    - Step 1: Collect Context（非 AI）
-    - Step 2: Risk Planning（LLM 单次 JSON）
-    - Step 3: Focused Review（文件级；当前实现为逐文件 JSON 输出）
-    - Step 4: Synthesize（确定性拼接/或后续可换成 LLM 无 loop）
+    Pipeline：
+    1. Risk Planning（LLM 单次 JSON）
+    2. 构建结构化上下文（diff → changed symbols → related symbols）
+    3. Focused Review（文件级 LLM JSON 输出）
+    4. Synthesize（确定性拼接）
     """
     with step_tracker("run_review") as tracker:
         tracker.step(f"开始 Review, 共 {len(context.changes)} 个变更文件")
         logger.debug(f"变更文件: {[c.path for c in context.changes]}")
 
+        # Step 1: Risk Planning
         tracker.step("Risk Planning - 调用 LLM 分析风险")
         plan = await plan_risk(llm_client=orchestrator.llm_client, context=context)
         logger.info(f"Risk Plan 结果: highRiskFiles={plan.highRiskFiles}, depth={plan.reviewDepth}")
 
-        tracker.step("构建上下文包 - 检索相关代码片段")
+        # Step 2: 构建结构化 symbol 上下文
+        tracker.step("构建上下文包 - 检索 changed/related symbols")
         repo_id = context.repo_id
-        context_by_path: dict[str, str] = {}
+        context_by_path: dict[str, ReviewContextPackage] = {}
         for i, change in enumerate(context.changes):
             tracker.substep(f"处理文件 [{i+1}/{len(context.changes)}]: {change.path}")
             context_by_path[change.path] = await build_context_package_for_change(
@@ -111,7 +115,14 @@ async def run_review(
                 repo_id=repo_id,
                 file_change=change,
             )
+            pkg = context_by_path[change.path]
+            logger.debug(
+                f"  {change.path}: "
+                f"changed_symbols={len(pkg.changed_symbols)}, "
+                f"related_symbols={len(pkg.related_symbols)}"
+            )
 
+        # Step 3: 文件级 Review
         tracker.step(f"文件级 Review - 审查 {len(plan.highRiskFiles)} 个高风险文件")
         comments = await review_high_risk_files(
             llm_client=orchestrator.llm_client,
@@ -121,8 +132,11 @@ async def run_review(
         )
         logger.info(f"Review 生成了 {len(comments)} 条评论")
 
+        # Step 4: 合成最终评论
         tracker.step("合成最终评论")
-        result = synthesize_review_markdown_body(head_sha=context.head_sha, plan=plan, comments=comments)
+        result = synthesize_review_markdown_body(
+            head_sha=context.head_sha, plan=plan, comments=comments,
+        )
         logger.debug(f"最终评论长度: {len(result)} 字符")
 
         return result
