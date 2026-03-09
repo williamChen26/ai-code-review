@@ -32,11 +32,12 @@ logger = logging.getLogger(__name__)
 class IndexStorageClient:
     """Postgres + pgvector 连接器。"""
 
-    def __init__(self, dsn: str) -> None:
+    def __init__(self, dsn: str, prepare_threshold: int | None = None) -> None:
         self._dsn = dsn
+        self.prepare_threshold = prepare_threshold
 
     def connect(self) -> psycopg.Connection:
-        conn = psycopg.connect(self._dsn)
+        conn = psycopg.connect(self._dsn, prepare_threshold=self.prepare_threshold)
         register_vector(conn)
         return conn
 

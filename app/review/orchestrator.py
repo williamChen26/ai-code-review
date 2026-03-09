@@ -71,7 +71,7 @@ def build_review_orchestrator(
     repo_sync: RepoSyncConfig,
 ) -> ReviewOrchestrator:
     """创建 orchestrator（便于未来注入 cache/queue 等依赖）。"""
-    storage_client = IndexStorageClient(dsn=index_storage.dsn)
+    storage_client = IndexStorageClient(dsn=index_storage.dsn, prepare_threshold=None)
     ensure_schema(storage_client)
     repo_syncer = RepoSyncer(base_dir=repo_sync.base_dir, git_bin=repo_sync.git_bin)
     return ReviewOrchestrator(
