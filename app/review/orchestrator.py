@@ -34,8 +34,8 @@ from app.indexing.indexer import ensure_initial_index
 from app.indexing.indexer import index_repo_incremental
 from app.indexing.repo_sync import RepoSyncer
 from app.llm.client import LiteLLMClient
-from app.review.context_retrieval import ReviewContextPackage
-from app.review.context_retrieval import build_context_package_for_change
+from app.review.context_retrieval import FileReviewContext
+from app.review.context_retrieval import build_file_review_context
 from app.review.models import ReviewContext
 from app.review.planner import plan_risk
 from app.review.reviewer import review_high_risk_files
@@ -103,30 +103,30 @@ async def run_review(
         plan = await plan_risk(llm_client=orchestrator.llm_client, context=context)
         logger.info(f"Risk Plan 结果: highRiskFiles={plan.highRiskFiles}, depth={plan.reviewDepth}")
 
-        # Step 2: 构建结构化 symbol 上下文
+        # Step 2: 构建结构化 FileReviewContext
         tracker.step("构建上下文包 - 检索 changed/related symbols")
         repo_id = context.repo_id
-        context_by_path: dict[str, ReviewContextPackage] = {}
+        context_by_path: dict[str, FileReviewContext] = {}
         for i, change in enumerate(context.changes):
             tracker.substep(f"处理文件 [{i+1}/{len(context.changes)}]: {change.path}")
-            context_by_path[change.path] = await build_context_package_for_change(
+            context_by_path[change.path] = await build_file_review_context(
                 storage_client=orchestrator.storage_client,
                 embedding_api_base=orchestrator.embedding_api_base,
                 repo_id=repo_id,
                 file_change=change,
             )
-            pkg = context_by_path[change.path]
+            ctx = context_by_path[change.path]
             logger.debug(
                 f"  {change.path}: "
-                f"changed_symbols={len(pkg.changed_symbols)}, "
-                f"related_symbols={len(pkg.related_symbols)}"
+                f"changed_symbols={len(ctx.context_package.changed_symbols)}, "
+                f"related_symbols={len(ctx.context_package.related_symbols)}, "
+                f"trace={ctx.decision_trace.reasons}"
             )
 
         # Step 3: 文件级 Review
         tracker.step(f"文件级 Review - 审查 {len(plan.highRiskFiles)} 个高风险文件")
         comments = await review_high_risk_files(
             llm_client=orchestrator.llm_client,
-            changes=context.changes,
             plan=plan,
             context_by_path=context_by_path,
         )

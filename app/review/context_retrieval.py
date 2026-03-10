@@ -4,31 +4,33 @@
 检索流程：
 1. diff → changed line numbers → 查 symbols 表 → changed symbols
 2. changed symbol code → embedding → 向量搜索 → related symbols
-3. needs_file_context() 判断是否补充 file summary（MVP 默认 false）
-4. 格式化输出结构化上下文
+3. 组装 FileReviewContext（review_target + context_package + decision_trace）
 
-输出结构 ReviewContextPackage 包含：
-- changed_symbols: 被修改的 symbol 列表
-- related_symbols: 语义相关的 symbol 列表
-- file_summaries:  文件摘要（条件性补充）
+输出结构 FileReviewContext 包含三层：
+- review_target: 审查目标（文件、语言、变更类型）
+- context_package: 上下文包（diff + changed/related symbols + 可扩展 file/module 字段）
+- decision_trace: 决策追踪（上下文构建的决策记录，用于调试）
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
 
 import anyio
 
 from app.llm.embedding import embed_texts
 from app.review.diff_parser import extract_changed_line_numbers
+from app.review.models import ContextDecisionTrace
+from app.review.models import ContextPackage
 from app.review.models import FileChange
+from app.review.models import FileReviewContext
+from app.review.models import ReviewTarget
+from app.review.models import SymbolContext
 from app.storage.models import SymbolRecord
 from app.storage.models import build_symbol_target_key
 from app.storage.pg import IndexStorageClient
 from app.storage.pg import find_symbols_by_line_range
 from app.storage.pg import find_symbols_by_names
-from app.storage.pg import get_file_records
 from app.storage.pg import search_similar_embeddings
 
 logger = logging.getLogger(__name__)
@@ -38,113 +40,116 @@ MAX_CONTEXT_CHARS = 6000
 
 
 # ---------------------------------------------------------------------------
-# 上下文包模型
-# ---------------------------------------------------------------------------
-
-@dataclass
-class ReviewContextPackage:
-    """单个文件变更的结构化上下文包。"""
-
-    changed_symbols: list[SymbolRecord] = field(default_factory=list)
-    related_symbols: list[SymbolRecord] = field(default_factory=list)
-    file_summaries: list[str] = field(default_factory=list)
-
-
-# ---------------------------------------------------------------------------
 # 公开 API
 # ---------------------------------------------------------------------------
 
-async def build_context_package_for_change(
+async def build_file_review_context(
     storage_client: IndexStorageClient,
     embedding_api_base: str,
     repo_id: str,
     file_change: FileChange,
-) -> ReviewContextPackage:
-    """为单个文件变更构建结构化上下文包。
+) -> FileReviewContext:
+    """为单个文件变更构建完整的 FileReviewContext。
 
     流程：
     1. diff line numbers → symbols 表查询 → changed_symbols
     2. 对 changed symbol 做 embedding 搜索 → related_symbols
-    3. 条件判断是否补充 file summary
+    3. 组装 review_target + context_package + decision_trace
     """
+    reasons: list[str] = []
+
     # Step 1: 找到被修改的 symbols
-    changed_symbols = await _find_changed_symbols(
+    changed_records = await _find_changed_symbols(
         storage_client=storage_client,
         repo_id=repo_id,
         file_change=file_change,
     )
+    if not changed_records:
+        reasons.append("no_changed_symbols_in_diff")
     logger.debug(
         f"[context] {file_change.path}: "
-        f"found {len(changed_symbols)} changed symbols"
+        f"found {len(changed_records)} changed symbols"
     )
 
     # Step 2: 通过 embedding 搜索相关 symbols
-    related_symbols = await _search_related_symbols(
+    related_records = await _search_related_symbols(
         storage_client=storage_client,
         embedding_api_base=embedding_api_base,
         repo_id=repo_id,
-        changed_symbols=changed_symbols,
+        changed_symbols=changed_records,
         exclude_path=file_change.path,
     )
+    if not related_records:
+        reasons.append("no_related_symbols_found")
     logger.debug(
         f"[context] {file_change.path}: "
-        f"found {len(related_symbols)} related symbols"
+        f"found {len(related_records)} related symbols"
     )
 
-    # Step 3: 条件补充 file summary
-    file_summaries: list[str] = []
-    if needs_file_context(changed_symbols=changed_symbols, related_symbols=related_symbols):
-        file_summaries = await _fetch_file_summaries(
-            storage_client=storage_client,
-            repo_id=repo_id,
-            paths=[file_change.path],
-        )
+    # needs_file_context(changed_symbols=changed_symbols, related_symbols=related_symbols)
+    # Step 3: file/module 级上下文（本期不提供，保留扩展点）
+    reasons.append("file_context_deferred")
 
-    return ReviewContextPackage(
-        changed_symbols=changed_symbols,
-        related_symbols=related_symbols,
-        file_summaries=file_summaries,
+    if file_change.is_new_file:
+        reasons.append("new_file_no_base_context")
+    if file_change.is_deleted_file:
+        reasons.append("deleted_file_limited_context")
+
+    return FileReviewContext(
+        review_target=ReviewTarget(
+            file=file_change.path,
+            language=file_change.language,
+            is_new_file=file_change.is_new_file,
+            is_deleted_file=file_change.is_deleted_file,
+            is_renamed_file=file_change.is_renamed_file,
+        ),
+        context_package=ContextPackage(
+            diff=file_change.diff,
+            changed_symbols=[_to_symbol_context(s) for s in changed_records],
+            related_symbols=[_to_symbol_context(s) for s in related_records],
+        ),
+        decision_trace=ContextDecisionTrace(
+            has_changed_symbols=bool(changed_records),
+            has_related_symbols=bool(related_records),
+            added_file_summary=False,
+            added_file_excerpt=False,
+            reasons=reasons,
+        ),
     )
 
 
-def needs_file_context(
-    changed_symbols: list[SymbolRecord],
-    related_symbols: list[SymbolRecord],
-) -> bool:
-    """判断是否需要补充 file 级 summary 上下文。
+def format_review_context(context: FileReviewContext) -> str:
+    """将 FileReviewContext 的上下文部分格式化为 LLM prompt 用的文本。
 
-    MVP 阶段固定返回 False，后续可根据以下条件扩展：
-    - changed_symbols 为空（无法定位到具体 symbol）
-    - related_symbols 数量不足
-    - 文件是新建文件
+    只格式化 context_package 中的 symbol 信息和可扩展字段，
+    diff 由 prompt builder 单独处理（利用 recency bias 放在 prompt 末尾）。
     """
-    return False
-
-
-def format_context_package(package: ReviewContextPackage) -> str:
-    """将 ReviewContextPackage 格式化为 LLM prompt 用的文本。"""
     parts: list[str] = []
+    pkg = context.context_package
 
-    if package.changed_symbols:
+    if pkg.changed_symbols:
         parts.append("### Changed Symbols")
-        for sym in package.changed_symbols:
-            header = f"**{sym.kind} `{sym.name}`** ({sym.path}:{sym.start_line}-{sym.end_line})"
+        parts.append("以下 symbol 在本次 diff 中被直接修改：")
+        for sym in pkg.changed_symbols:
+            header = f"**{sym.kind} `{sym.name}`** ({sym.file}:{sym.start_line}-{sym.end_line})"
             code = _truncate(text=sym.code, max_chars=MAX_CONTEXT_CHARS)
             parts.append(header)
             parts.append(f"```\n{code}\n```")
 
-    if package.related_symbols:
+    if pkg.related_symbols:
         parts.append("\n### Related Symbols")
-        for sym in package.related_symbols:
-            header = f"**{sym.kind} `{sym.name}`** ({sym.path}:{sym.start_line}-{sym.end_line})"
+        parts.append("以下 symbol 与被修改代码语义相关或存在调用关系：")
+        for sym in pkg.related_symbols:
+            header = f"**{sym.kind} `{sym.name}`** ({sym.file}:{sym.start_line}-{sym.end_line})"
             code = _truncate(text=sym.code, max_chars=MAX_CONTEXT_CHARS)
             parts.append(header)
             parts.append(f"```\n{code}\n```")
 
-    if package.file_summaries:
-        parts.append("\n### File Summaries")
-        for summary in package.file_summaries:
-            parts.append(summary)
+    if pkg.file_summary:
+        parts.append(f"\n### File Summary\n{pkg.file_summary}")
+
+    if pkg.module_summary:
+        parts.append(f"\n### Module Summary\n{pkg.module_summary}")
 
     return "\n".join(parts) if parts else ""
 
@@ -152,6 +157,18 @@ def format_context_package(package: ReviewContextPackage) -> str:
 # ---------------------------------------------------------------------------
 # 内部实现
 # ---------------------------------------------------------------------------
+
+def _to_symbol_context(record: SymbolRecord) -> SymbolContext:
+    """SymbolRecord（存储层） → SymbolContext（审查层）。"""
+    return SymbolContext(
+        name=record.name,
+        kind=record.kind,
+        file=record.path,
+        start_line=record.start_line,
+        end_line=record.end_line,
+        code=record.code,
+    )
+
 
 async def _find_changed_symbols(
     storage_client: IndexStorageClient,
@@ -196,13 +213,11 @@ async def _search_related_symbols(
     related: list[SymbolRecord] = []
     seen_keys: set[str] = set()
 
-    # 排除当前文件中已经被标记为 changed 的 symbols
     for sym in changed_symbols:
         key = build_symbol_target_key(path=sym.path, name=sym.name, start_line=sym.start_line)
         seen_keys.add(key)
 
     # 策略 1: 向量搜索
-    # 用第一个 changed symbol 的 code 做查询（避免过多 embedding 调用）
     query_sym = changed_symbols[0]
     query_text = f"File: {query_sym.path}\n\nCode:\n{query_sym.code}"
     try:
@@ -217,12 +232,10 @@ async def _search_related_symbols(
             embedding_result[0],
             TOP_K_SIMILAR,
         )
-        # 将 embedding hit 的 target_key 解析回 symbol 查询条件
         for hit in embed_hits:
             if hit.target_key in seen_keys:
                 continue
             seen_keys.add(hit.target_key)
-            # target_key 格式: "path::name::start_line"
             sym_records = await _resolve_symbol_from_target_key(
                 storage_client=storage_client, repo_id=repo_id, target_key=hit.target_key,
             )
@@ -276,20 +289,7 @@ async def _resolve_symbol_from_target_key(
         start_line,
         start_line,
     )
-    # 精确匹配 name
     return [s for s in symbols if s.name == name]
-
-
-async def _fetch_file_summaries(
-    storage_client: IndexStorageClient,
-    repo_id: str,
-    paths: list[str],
-) -> list[str]:
-    """获取文件级 summary material。"""
-    records = await anyio.to_thread.run_sync(
-        get_file_records, storage_client, repo_id, paths,
-    )
-    return [r.summary_material for r in records if r.summary_material]
 
 
 # ---------------------------------------------------------------------------

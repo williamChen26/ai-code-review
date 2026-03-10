@@ -69,3 +69,68 @@ class ReviewComment(BaseModel):
     severity: Literal["info", "warning", "error"]
 
 
+# ---------------------------------------------------------------------------
+# FileReviewContext 三层结构
+# ---------------------------------------------------------------------------
+
+
+class SymbolContext(BaseModel):
+    """审查上下文中的 symbol 信息（SymbolRecord 的 LLM-facing 子集）。"""
+
+    name: str
+    kind: str
+    file: str
+    start_line: int
+    end_line: int
+    code: str
+
+
+class ReviewTarget(BaseModel):
+    """审查目标：标识正在审查的文件及其变更属性。"""
+
+    file: str
+    language: str
+    is_new_file: bool
+    is_deleted_file: bool
+    is_renamed_file: bool
+
+
+class ContextPackage(BaseModel):
+    """分层上下文包：为 LLM 提供结构化的审查上下文。
+
+    当前阶段提供 diff + symbol 级上下文；
+    file/module 级上下文字段保留为 None，供后续扩展。
+    """
+
+    diff: str
+    changed_symbols: list[SymbolContext]
+    related_symbols: list[SymbolContext]
+    file_summary: str | None = None
+    file_excerpt: str | None = None
+    module_summary: str | None = None
+
+
+class ContextDecisionTrace(BaseModel):
+    """上下文构建的决策追踪，用于调试和可观测性。"""
+
+    has_changed_symbols: bool
+    has_related_symbols: bool
+    added_file_summary: bool
+    added_file_excerpt: bool
+    reasons: list[str]
+
+
+class FileReviewContext(BaseModel):
+    """单个文件的完整审查上下文。
+
+    三层结构：
+    - review_target: 审查目标（什么文件、什么类型的变更）
+    - context_package: 上下文包（diff + symbols + 可扩展的 file/module 上下文）
+    - decision_trace: 决策追踪（为什么选择了这些上下文）
+    """
+
+    review_target: ReviewTarget
+    context_package: ContextPackage
+    decision_trace: ContextDecisionTrace
+
+
