@@ -18,6 +18,7 @@ import logging
 
 import anyio
 
+from app.indexing.embed_utils import build_embedding_text
 from app.llm.embedding import embed_texts
 from app.review.diff_parser import extract_changed_line_numbers
 from app.review.models import ContextDecisionTrace
@@ -86,7 +87,6 @@ async def build_file_review_context(
         f"found {len(related_records)} related symbols"
     )
 
-    # needs_file_context(changed_symbols=changed_symbols, related_symbols=related_symbols)
     # Step 3: file/module 级上下文（本期不提供，保留扩展点）
     reasons.append("file_context_deferred")
 
@@ -219,7 +219,7 @@ async def _search_related_symbols(
 
     # 策略 1: 向量搜索
     query_sym = changed_symbols[0]
-    query_text = f"File: {query_sym.path}\n\nCode:\n{query_sym.code}"
+    query_text = build_embedding_text(path=query_sym.path, code=query_sym.code)
     try:
         embedding_result = await embed_texts(
             api_base=embedding_api_base, texts=[query_text],

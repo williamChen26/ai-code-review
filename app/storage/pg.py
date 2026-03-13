@@ -30,16 +30,24 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 class IndexStorageClient:
-    """Postgres + pgvector 连接器。"""
+    """Postgres + pgvector 连接器（内部缓存连接，避免重复创建）。"""
 
     def __init__(self, dsn: str, prepare_threshold: int | None = None) -> None:
         self._dsn = dsn
         self.prepare_threshold = prepare_threshold
+        self._conn: psycopg.Connection | None = None
 
     def connect(self) -> psycopg.Connection:
-        conn = psycopg.connect(self._dsn, prepare_threshold=self.prepare_threshold)
-        register_vector(conn)
-        return conn
+        if self._conn is not None and not self._conn.closed:
+            return self._conn
+        self._conn = psycopg.connect(self._dsn, prepare_threshold=self.prepare_threshold)
+        register_vector(self._conn)
+        return self._conn
+
+    def close(self) -> None:
+        if self._conn is not None and not self._conn.closed:
+            self._conn.close()
+            self._conn = None
 
 
 # ---------------------------------------------------------------------------
@@ -48,8 +56,8 @@ class IndexStorageClient:
 
 def ensure_schema(client: IndexStorageClient) -> None:
     """创建三表 + 索引（幂等，可重复调用）。"""
-    with client.connect() as conn:
-        with conn.cursor() as cur:
+    conn = client.connect()
+    with conn.cursor() as cur:
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
             # -- files 表 --
@@ -120,7 +128,7 @@ def ensure_schema(client: IndexStorageClient) -> None:
                 """
             )
 
-        conn.commit()
+    conn.commit()
     logger.info("Schema ensured: files / symbols / embeddings")
 
 
@@ -129,24 +137,26 @@ def ensure_schema(client: IndexStorageClient) -> None:
 # ---------------------------------------------------------------------------
 
 def upsert_files(client: IndexStorageClient, records: Sequence[FileRecord]) -> None:
-    """批量 upsert 文件记录。"""
+    """批量 upsert 文件记录（executemany 一次提交）。"""
     if not records:
         return
-    with client.connect() as conn:
-        with conn.cursor() as cur:
-            for r in records:
-                cur.execute(
-                    """
-                    INSERT INTO files (repo_id, path, language, checksum, summary_material)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (repo_id, path)
-                    DO UPDATE SET language         = EXCLUDED.language,
-                                  checksum         = EXCLUDED.checksum,
-                                  summary_material = EXCLUDED.summary_material
-                    """,
-                    (r.repo_id, r.path, r.language, r.checksum, r.summary_material),
-                )
-        conn.commit()
+    conn = client.connect()
+    with conn.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO files (repo_id, path, language, checksum, summary_material)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (repo_id, path)
+            DO UPDATE SET language         = EXCLUDED.language,
+                          checksum         = EXCLUDED.checksum,
+                          summary_material = EXCLUDED.summary_material
+            """,
+            [
+                (r.repo_id, r.path, r.language, r.checksum, r.summary_material)
+                for r in records
+            ],
+        )
+    conn.commit()
 
 
 def delete_files_by_paths(
@@ -155,21 +165,21 @@ def delete_files_by_paths(
     """删除指定文件记录。"""
     if not paths:
         return
-    with client.connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM files WHERE repo_id = %s AND path = ANY(%s)",
-                (repo_id, list(paths)),
-            )
-        conn.commit()
+    conn = client.connect()
+    with conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM files WHERE repo_id = %s AND path = ANY(%s)",
+            (repo_id, list(paths)),
+        )
+    conn.commit()
 
 
 def list_indexed_file_paths(client: IndexStorageClient, repo_id: str) -> list[str]:
     """列出该 repo 已索引的所有文件路径。"""
-    with client.connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT path FROM files WHERE repo_id = %s", (repo_id,))
-            rows = cur.fetchall()
+    conn = client.connect()
+    with conn.cursor() as cur:
+        cur.execute("SELECT path FROM files WHERE repo_id = %s", (repo_id,))
+        rows = cur.fetchall()
     return [row[0] for row in rows]
 
 
@@ -179,17 +189,17 @@ def get_file_records(
     """按路径批量查询文件记录。"""
     if not paths:
         return []
-    with client.connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT repo_id, path, language, checksum, summary_material
-                FROM files
-                WHERE repo_id = %s AND path = ANY(%s)
-                """,
-                (repo_id, list(paths)),
-            )
-            rows = cur.fetchall()
+    conn = client.connect()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT repo_id, path, language, checksum, summary_material
+            FROM files
+            WHERE repo_id = %s AND path = ANY(%s)
+            """,
+            (repo_id, list(paths)),
+        )
+        rows = cur.fetchall()
     return [
         FileRecord(
             repo_id=row[0], path=row[1], language=row[2],
@@ -204,32 +214,34 @@ def get_file_records(
 # ---------------------------------------------------------------------------
 
 def upsert_symbols(client: IndexStorageClient, records: Sequence[SymbolRecord]) -> None:
-    """批量 upsert symbol 记录。"""
+    """批量 upsert symbol 记录（executemany 一次提交）。"""
     if not records:
         return
-    with client.connect() as conn:
-        with conn.cursor() as cur:
-            for r in records:
-                cur.execute(
-                    """
-                    INSERT INTO symbols
-                        (repo_id, path, name, kind, start_line, end_line, code, checksum, imports, calls)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
-                    ON CONFLICT (repo_id, path, name, start_line)
-                    DO UPDATE SET kind      = EXCLUDED.kind,
-                                  end_line  = EXCLUDED.end_line,
-                                  code      = EXCLUDED.code,
-                                  checksum  = EXCLUDED.checksum,
-                                  imports   = EXCLUDED.imports,
-                                  calls     = EXCLUDED.calls
-                    """,
-                    (
-                        r.repo_id, r.path, r.name, r.kind,
-                        r.start_line, r.end_line, r.code, r.checksum,
-                        json.dumps(r.imports), json.dumps(r.calls),
-                    ),
+    conn = client.connect()
+    with conn.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO symbols
+                (repo_id, path, name, kind, start_line, end_line, code, checksum, imports, calls)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
+            ON CONFLICT (repo_id, path, name, start_line)
+            DO UPDATE SET kind      = EXCLUDED.kind,
+                          end_line  = EXCLUDED.end_line,
+                          code      = EXCLUDED.code,
+                          checksum  = EXCLUDED.checksum,
+                          imports   = EXCLUDED.imports,
+                          calls     = EXCLUDED.calls
+            """,
+            [
+                (
+                    r.repo_id, r.path, r.name, r.kind,
+                    r.start_line, r.end_line, r.code, r.checksum,
+                    json.dumps(r.imports), json.dumps(r.calls),
                 )
-        conn.commit()
+                for r in records
+            ],
+        )
+    conn.commit()
 
 
 def delete_symbols_by_paths(
@@ -238,13 +250,13 @@ def delete_symbols_by_paths(
     """删除指定路径下的所有 symbol。"""
     if not paths:
         return
-    with client.connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM symbols WHERE repo_id = %s AND path = ANY(%s)",
-                (repo_id, list(paths)),
-            )
-        conn.commit()
+    conn = client.connect()
+    with conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM symbols WHERE repo_id = %s AND path = ANY(%s)",
+            (repo_id, list(paths)),
+        )
+    conn.commit()
 
 
 def find_symbols_by_line_range(
@@ -257,19 +269,19 @@ def find_symbols_by_line_range(
     """查找与指定行范围有交集的 symbol（用于 diff -> changed symbols 映射）。"""
     if start_line <= 0 or end_line < start_line:
         raise ValueError(f"Invalid line range: start_line={start_line}, end_line={end_line}")
-    with client.connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT repo_id, path, name, kind, start_line, end_line,
-                       code, checksum, imports, calls
-                FROM symbols
-                WHERE repo_id = %s AND path = %s
-                  AND start_line <= %s AND end_line >= %s
-                """,
-                (repo_id, path, end_line, start_line),
-            )
-            rows = cur.fetchall()
+    conn = client.connect()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT repo_id, path, name, kind, start_line, end_line,
+                   code, checksum, imports, calls
+            FROM symbols
+            WHERE repo_id = %s AND path = %s
+              AND start_line <= %s AND end_line >= %s
+            """,
+            (repo_id, path, end_line, start_line),
+        )
+        rows = cur.fetchall()
     return [_row_to_symbol(row) for row in rows]
 
 
@@ -281,18 +293,18 @@ def find_symbols_by_names(
     """按 symbol 名称查找（用于调用关系图查询）。"""
     if not names:
         return []
-    with client.connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT repo_id, path, name, kind, start_line, end_line,
-                       code, checksum, imports, calls
-                FROM symbols
-                WHERE repo_id = %s AND name = ANY(%s)
-                """,
-                (repo_id, list(names)),
-            )
-            rows = cur.fetchall()
+    conn = client.connect()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT repo_id, path, name, kind, start_line, end_line,
+                   code, checksum, imports, calls
+            FROM symbols
+            WHERE repo_id = %s AND name = ANY(%s)
+            """,
+            (repo_id, list(names)),
+        )
+        rows = cur.fetchall()
     return [_row_to_symbol(row) for row in rows]
 
 
@@ -302,19 +314,19 @@ def find_symbols_by_path(
     path: str,
 ) -> list[SymbolRecord]:
     """查找指定文件中的所有 symbol。"""
-    with client.connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT repo_id, path, name, kind, start_line, end_line,
-                       code, checksum, imports, calls
-                FROM symbols
-                WHERE repo_id = %s AND path = %s
-                ORDER BY start_line
-                """,
-                (repo_id, path),
-            )
-            rows = cur.fetchall()
+    conn = client.connect()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT repo_id, path, name, kind, start_line, end_line,
+                   code, checksum, imports, calls
+            FROM symbols
+            WHERE repo_id = %s AND path = %s
+            ORDER BY start_line
+            """,
+            (repo_id, path),
+        )
+        rows = cur.fetchall()
     return [_row_to_symbol(row) for row in rows]
 
 
@@ -339,22 +351,24 @@ def _row_to_symbol(row: tuple) -> SymbolRecord:  # type: ignore[type-arg]
 def upsert_embeddings(
     client: IndexStorageClient, records: Sequence[EmbeddingRecord]
 ) -> None:
-    """批量 upsert embedding 记录。"""
+    """批量 upsert embedding 记录（executemany 一次提交）。"""
     if not records:
         return
-    with client.connect() as conn:
-        with conn.cursor() as cur:
-            for r in records:
-                cur.execute(
-                    """
-                    INSERT INTO embeddings (repo_id, target_type, target_key, embedding)
-                    VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (repo_id, target_type, target_key)
-                    DO UPDATE SET embedding = EXCLUDED.embedding
-                    """,
-                    (r.repo_id, r.target_type, r.target_key, r.embedding),
-                )
-        conn.commit()
+    conn = client.connect()
+    with conn.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO embeddings (repo_id, target_type, target_key, embedding)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (repo_id, target_type, target_key)
+            DO UPDATE SET embedding = EXCLUDED.embedding
+            """,
+            [
+                (r.repo_id, r.target_type, r.target_key, r.embedding)
+                for r in records
+            ],
+        )
+    conn.commit()
 
 
 def delete_embeddings_by_paths(
@@ -369,27 +383,25 @@ def delete_embeddings_by_paths(
     """
     if not paths:
         return
-    with client.connect() as conn:
-        with conn.cursor() as cur:
-            # 删除 file 类型的 embedding
+    conn = client.connect()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            DELETE FROM embeddings
+            WHERE repo_id = %s AND target_type = 'file' AND target_key = ANY(%s)
+            """,
+            (repo_id, list(paths)),
+        )
+        for p in paths:
             cur.execute(
                 """
                 DELETE FROM embeddings
-                WHERE repo_id = %s AND target_type = 'file' AND target_key = ANY(%s)
+                WHERE repo_id = %s AND target_type = 'symbol'
+                  AND target_key LIKE %s
                 """,
-                (repo_id, list(paths)),
+                (repo_id, f"{p}::%"),
             )
-            # 删除 symbol 类型的 embedding（target_key 以 path:: 开头）
-            for p in paths:
-                cur.execute(
-                    """
-                    DELETE FROM embeddings
-                    WHERE repo_id = %s AND target_type = 'symbol'
-                      AND target_key LIKE %s
-                    """,
-                    (repo_id, f"{p}::%"),
-                )
-        conn.commit()
+    conn.commit()
 
 
 def search_similar_embeddings(
@@ -406,19 +418,19 @@ def search_similar_embeddings(
     """
     if limit <= 0:
         raise ValueError("limit must be > 0")
-    with client.connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT repo_id, target_type, target_key
-                FROM embeddings
-                WHERE repo_id = %s AND target_type = %s
-                ORDER BY embedding <=> %s::vector
-                LIMIT %s
-                """,
-                (repo_id, target_type, list(query_embedding), limit),
-            )
-            rows = cur.fetchall()
+    conn = client.connect()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT repo_id, target_type, target_key
+            FROM embeddings
+            WHERE repo_id = %s AND target_type = %s
+            ORDER BY embedding <=> %s::vector
+            LIMIT %s
+            """,
+            (repo_id, target_type, list(query_embedding), limit),
+        )
+        rows = cur.fetchall()
     return [
         EmbeddingRecord(
             repo_id=row[0], target_type=row[1], target_key=row[2],
@@ -433,19 +445,40 @@ def search_similar_embeddings(
 
 def list_all_repo_ids(client: IndexStorageClient) -> list[str]:
     """列出所有已索引的 repo_id。"""
-    with client.connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT DISTINCT repo_id FROM files")
-            rows = cur.fetchall()
+    conn = client.connect()
+    with conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT repo_id FROM files")
+        rows = cur.fetchall()
     return [row[0] for row in rows]
 
 
 def delete_all_by_repo(client: IndexStorageClient, repo_id: str) -> None:
     """删除指定 repo 的所有数据（全量重建前调用）。"""
-    with client.connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM embeddings WHERE repo_id = %s", (repo_id,))
-            cur.execute("DELETE FROM symbols WHERE repo_id = %s", (repo_id,))
-            cur.execute("DELETE FROM files WHERE repo_id = %s", (repo_id,))
-        conn.commit()
+    conn = client.connect()
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM embeddings WHERE repo_id = %s", (repo_id,))
+        cur.execute("DELETE FROM symbols WHERE repo_id = %s", (repo_id,))
+        cur.execute("DELETE FROM files WHERE repo_id = %s", (repo_id,))
+    conn.commit()
     logger.info(f"Deleted all index data for repo_id={repo_id}")
+
+
+def delete_stale_files(
+    client: IndexStorageClient, repo_id: str, valid_paths: Sequence[str]
+) -> None:
+    """清理不在 valid_paths 中的孤立记录（全量索引结束后调用）。"""
+    if not valid_paths:
+        return
+    conn = client.connect()
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT path FROM files WHERE repo_id = %s AND path != ALL(%s)",
+            (repo_id, list(valid_paths)),
+        )
+        stale_paths = [row[0] for row in cur.fetchall()]
+    if not stale_paths:
+        return
+    logger.info(f"Cleaning {len(stale_paths)} stale paths for repo_id={repo_id}")
+    delete_embeddings_by_paths(client=client, repo_id=repo_id, paths=stale_paths)
+    delete_symbols_by_paths(client=client, repo_id=repo_id, paths=stale_paths)
+    delete_files_by_paths(client=client, repo_id=repo_id, paths=stale_paths)
