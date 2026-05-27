@@ -1,10 +1,10 @@
 """
 FastAPI 服务入口。
 
-这里做三件事：
+职责：
 - 加载配置（严格校验环境变量）
-- 组装外部依赖（HTTP Client / LLM Client / GitLab Webhook handler）
-- 装配路由（health + gitlab webhook）
+- 组装外部依赖（HTTP Client / LLM Client / Webhook handler）
+- 装配路由（health + gitlab/github webhook + index/full）
 
 注意：
 - 业务流程不写在这里（由 `review/orchestrator.py` 负责）
@@ -16,8 +16,10 @@ from __future__ import annotations
 import logging
 import os
 
+import anyio
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, Body
+from pydantic import BaseModel
 
 from app.debug_utils import setup_logging
 from app.debug_utils import get_logger
@@ -29,10 +31,29 @@ logger = get_logger(__name__)
 from app.config import load_config_from_env
 from app.github.webhook import build_github_webhook_router
 from app.gitlab.webhook import build_gitlab_webhook_router
+from app.indexing.indexer import build_repo_id
+from app.indexing.indexer import index_repo_full
 from app.llm.client import LiteLLMClient
 from app.review.orchestrator import build_review_orchestrator
 from app.review.orchestrator import build_github_webhook_handler
 from app.review.orchestrator import build_webhook_handler
+
+
+class IndexFullRequest(BaseModel):
+    """手动触发全量索引的请求体。"""
+    provider: str  # "github" | "gitlab"
+    repo_key: str  # e.g. "owner/repo" or "project_id"
+    clone_url: str  # git clone URL
+    branch: str = "main"  # 索引分支
+    token: str | None = None
+    token_user: str | None = None
+
+
+class IndexLocalRequest(BaseModel):
+    """手动触发本地目录索引（调试用，无需 clone）。"""
+    provider: str
+    repo_key: str
+    repo_dir: str
 
 
 def build_app() -> FastAPI:
@@ -73,7 +94,66 @@ def build_app() -> FastAPI:
     @app.get("/health")
     async def health() -> dict[str, str]:
         """健康检查：用于 k8s / LB 探活。"""
-        return {"status": "ok 2"}
+        return {"status": "ok"}
+
+    # ---- 手动全量索引端点 ----
+
+    @app.post("/index/full")
+    async def index_full(req: IndexFullRequest = Body(...)) -> dict[str, str]:
+        """手动触发全量索引（用于调试和初始化）。
+
+        会先 clone/pull 仓库到本地，然后执行：
+        AST 解析 → 写 files/symbols → 生成 embedding → 写 embeddings
+        """
+        logger.info(f"手动全量索引: provider={req.provider}, repo_key={req.repo_key}")
+        repo_id = build_repo_id(provider=req.provider, repo_key=req.repo_key)
+        async with orchestrator.lock_manager.acquire(repo_id):
+            repo_dir = await anyio.to_thread.run_sync(
+                lambda: orchestrator.repo_syncer.ensure_repo(
+                    repo_id=repo_id,
+                    clone_url=req.clone_url,
+                    target_branch=req.branch,
+                    token=req.token,
+                    token_user=req.token_user,
+                )
+            )
+            await index_repo_full(
+                storage_client=orchestrator.storage_client,
+                embedding_api_base=orchestrator.embedding_api_base,
+                repo_id=repo_id,
+                repo_dir=repo_dir,
+            )
+        logger.info(f"全量索引完成: repo_id={repo_id}")
+        return {"status": "ok", "repo_id": repo_id}
+
+    @app.post("/index/local")
+    async def index_local(req: IndexLocalRequest = Body(...)) -> dict[str, str]:
+        """直接对本地目录做全量索引（调试用，省去 git clone）。
+
+        适合本地测试：先手动 clone 一个项目到本地，然后用这个端点触发索引，
+        观察日志中的 chunk 进度、embedding 调用、DB 写入。
+
+        示例：
+        curl -X POST http://localhost:8000/index/local \\
+          -H 'Content-Type: application/json' \\
+          -d '{"provider":"local","repo_key":"my-project","repo_dir":"/path/to/repo"}'
+        """
+        import time
+        t0 = time.monotonic()
+        repo_id = build_repo_id(provider=req.provider, repo_key=req.repo_key)
+        logger.info(f"本地索引开始: repo_id={repo_id}, repo_dir={req.repo_dir}")
+
+        async with orchestrator.lock_manager.acquire(repo_id):
+            await index_repo_full(
+                storage_client=orchestrator.storage_client,
+                embedding_api_base=orchestrator.embedding_api_base,
+                repo_id=repo_id,
+                repo_dir=req.repo_dir,
+            )
+
+        elapsed = time.monotonic() - t0
+        logger.info(f"本地索引完成: repo_id={repo_id}, 耗时={elapsed:.1f}s")
+        return {"status": "ok", "repo_id": repo_id, "elapsed_seconds": f"{elapsed:.1f}"}
 
     if config.gitlab is not None:
         logger.info("Step 6a: 注册 GitLab Webhook 路由...")
