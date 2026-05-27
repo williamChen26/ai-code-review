@@ -23,6 +23,7 @@ class NoteCreateRequest(BaseModel):
 
 
 def _default_changes_response() -> dict[str, object]:
+    """模拟 GET /projects/:id/merge_requests/:iid/changes 的响应。"""
     return {
         "changes": [
             {
@@ -50,6 +51,7 @@ def _default_changes_response() -> dict[str, object]:
             "head_sha": "1111111111111111111111111111111111111111",
             "start_sha": "0000000000000000000000000000000000000000",
         },
+        "overflow": False,
     }
 
 

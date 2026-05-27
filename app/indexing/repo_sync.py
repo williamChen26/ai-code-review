@@ -67,5 +67,6 @@ def _run_git(git_bin: str, args: list[str], cwd: str | None) -> None:
     cmd = [git_bin] + args
     result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
     if result.returncode != 0:
+        err = (result.stderr or result.stdout or "").strip()
         logger.error(f"git failed: {' '.join(cmd)}\nstdout={result.stdout}\nstderr={result.stderr}")
-        raise RuntimeError(f"git command failed: {' '.join(cmd)}")
+        raise RuntimeError(f"git command failed: {' '.join(cmd)}" + (f" — {err}" if err else ""))
